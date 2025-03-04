@@ -99,6 +99,37 @@ TUN needs to be enabled before running this installer."
     fi
 fi
 
+# Check and install yq for YAML parsing
+if ! hash yq 2>/dev/null; then
+    echo "yq is required to parse YAML configuration files."
+    read -n1 -r -p "Press any key to install yq and continue..."
+    if [[ "$os" == "ubuntu" || "$os" == "debian" ]]; then
+        apt-get update
+        apt-get install -y yq
+    elif [[ "$os" == "centos" ]]; then
+        dnf install -y epel-release
+        dnf install -y yq
+    elif [[ "$os" == "fedora" ]]; then
+        dnf install -y yq
+    fi
+fi
+
+# Read YAML configuration file
+CONFIG_FILE="/etc/wireguard/wg-config.yaml"
+if [[ -f "$CONFIG_FILE" ]]; then
+    SERVER_IP=$(yq e '.server.ip' "$CONFIG_FILE")
+    SERVER_PORT=$(yq e '.server.port' "$CONFIG_FILE")
+    if [[ "$SERVER_IP" == "null" || -z "$SERVER_IP" ]]; then
+        echo "Server IP not specified in YAML."
+    fi
+    if [[ "$SERVER_PORT" == "null" || -z "$SERVER_PORT" ]]; then
+        echo "Server port not specified in YAML, using default 51820."
+        SERVER_PORT="51820"
+    fi
+else
+    echo "YAML config file ($CONFIG_FILE) not found."
+fi
+
 # Install required tools
 if [[ ! -e /etc/wireguard/wg0.conf ]]; then
     # Detect some Debian minimal setups where neither wget nor curl are installed
@@ -151,3 +182,4 @@ Environment=WG_SUDO=1" > /etc/systemd/system/wg-quick@wg0.service.d/boringtun.co
 fi
 
 echo "Setup complete: OS detected ($os $os_version), BoringTun set to $use_boringtun, tools installed."
+echo "Server IP = ${SERVER_IP:-not set}, Server Port = ${SERVER_PORT:-not set}"
