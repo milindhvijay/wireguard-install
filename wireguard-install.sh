@@ -120,3 +120,63 @@ else
 		mkdir -p /etc/wireguard/
 	fi
 fi
+
+# Ensure yq is installed
+install_yq() {
+    if ! command -v yq &> /dev/null; then
+        echo "yq not found. Installing..."
+        if [[ "$os" == "ubuntu" || "$os" == "debian" ]]; then
+            wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq
+            chmod +x /usr/bin/yq
+        elif [[ "$os" == "centos" || "$os" == "fedora" ]]; then
+            dnf install -y yq
+        else
+            echo "Unsupported OS for automatic yq installation"
+            exit 1
+        fi
+    fi
+}
+
+# Default config file locations (in order of precedence)
+CONFIG_LOCATIONS=(
+    "./wireguard.yaml"
+    "/etc/wireguard/config.yaml"
+    "$HOME/.config/wireguard/config.yaml"
+    "/usr/local/etc/wireguard/config.yaml"
+)
+
+find_config_file() {
+    for config in "${CONFIG_LOCATIONS[@]}"; do
+        if [[ -f "$config" ]]; then
+            echo "$config"
+            return 0
+        fi
+    done
+
+    echo "No configuration file found. Checked locations:"
+    printf '%s\n' "${CONFIG_LOCATIONS[@]}"
+    exit 1
+}
+
+# Parse config from YAML
+parse_config() {
+    local config_file="$1"
+
+    # Validate config file exists
+    if [[ ! -f "$config_file" ]]; then
+        echo "Config file not found: $config_file"
+        exit 1
+    fi
+
+    # Extract configuration values
+    SERVER_IPV4=$(yq '.server.ipv4' "$config_file")
+    SERVER_PORT=$(yq '.server.port' "$config_file")
+    CLIENT_NAME=$(yq '.client.name' "$config_file")
+    DNS_SERVER=$(yq '.client.dns' "$config_file")
+
+    # Validate extracted values
+    [[ -z "$SERVER_IPV4" ]] && { echo "No IPv4 address specified in config"; exit 1; }
+    [[ -z "$SERVER_PORT" ]] && SERVER_PORT="51820"
+    [[ -z "$CLIENT_NAME" ]] && CLIENT_NAME="client"
+    [[ -z "$DNS_SERVER" ]] && DNS_SERVER="1"
+}
