@@ -180,3 +180,59 @@ parse_config() {
     [[ -z "$CLIENT_NAME" ]] && CLIENT_NAME="client"
     [[ -z "$DNS_SERVER" ]] && DNS_SERVER="1"
 }
+
+new_client_setup() {
+    # Find lowest available octet
+    octet=2
+    while grep AllowedIPs /etc/wireguard/wg0.conf | cut -d "." -f 4 | cut -d "/" -f 1 | grep -q "^$octet$"; do
+        (( octet++ ))
+    done
+
+    # Check if subnet is full
+    if [[ "$octet" -eq 255 ]]; then
+        echo "253 clients are already configured. The WireGuard internal subnet is full!"
+        exit 1
+    fi
+
+    # Generate keys
+    key=$(wg genkey)
+    psk=$(wg genpsk)
+    public_key=$(wg pubkey <<< "$key")
+
+    # Append to server configuration
+    cat << EOF >> /etc/wireguard/wg0.conf
+# BEGIN_PEER $client
+[Peer]
+PublicKey = $public_key
+PresharedKey = $psk
+AllowedIPs = 10.7.0.$octet/32
+# END_PEER $client
+EOF
+
+    # Create client configuration
+    cat << EOF > ~/"$client".conf
+[Interface]
+Address = 10.7.0.$octet/24
+DNS = $DNS_SERVER
+PrivateKey = $key
+
+[Peer]
+PublicKey = $(grep PrivateKey /etc/wireguard/wg0.conf | cut -d " " -f 3 | wg pubkey)
+PresharedKey = $psk
+AllowedIPs = 0.0.0.0/0
+Endpoint = $SERVER_IPV4:$SERVER_PORT
+PersistentKeepalive = 25
+EOF
+
+    # Add to live WireGuard interface
+    wg addconf wg0 <(sed -n "/^# BEGIN_PEER $client/,/^# END_PEER $client/p" /etc/wireguard/wg0.conf)
+
+    # Print client details
+    echo "New WireGuard Client Created:"
+    echo "- Name: $client"
+    echo "- Internal IP: 10.7.0.$octet"
+    echo "- Configuration file: ~/$client.conf"
+
+    # Generate QR code
+    qrencode -t ANSI256UTF8 < ~/"$client".conf
+}
