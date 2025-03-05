@@ -272,6 +272,7 @@ CLIENT_COUNT=$(yq '.clients | length' "$CONFIG_FILE")
 ADDED_NEW_CLIENTS=false
 UPDATED_CLIENTS=()
 UPDATED_IPS=()
+UPDATED_CLIENT_NAMES=()
 
 for (( i=0; i<$CLIENT_COUNT; i++ )); do
   CLIENT_NAME=$(yq ".clients[$i].name" "$CONFIG_FILE")
@@ -320,6 +321,7 @@ $NEW_IP"
     # Track for YAML update
     UPDATED_CLIENTS+=($i)
     UPDATED_IPS+=("$CLIENT_IP")
+    UPDATED_CLIENT_NAMES+=("$CLIENT_NAME")
     YAML_MODIFIED=true
   fi
 
@@ -391,44 +393,59 @@ if [ "$YAML_MODIFIED" = true ]; then
   # Create a backup of the original YAML
   cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
 
-  # Create a temporary file for the updated YAML
-  TEMP_YAML=$(mktemp)
+  # For each client that needs updating, use yq directly to update the IP
+  for (( i=0; i<${#UPDATED_CLIENTS[@]}; i++ )); do
+    client_index=${UPDATED_CLIENTS[$i]}
+    client_ip=${UPDATED_IPS[$i]}
+    client_name=${UPDATED_CLIENT_NAMES[$i]}
 
-  # Process the YAML file line by line to preserve formatting
-  while IFS= read -r line; do
-    # Check if the line starts with a client entry that needs updating
-    if [[ "$line" =~ ^[[:space:]]*-[[:space:]]*name:[[:space:]]*(.+)$ ]]; then
-      client_name="${BASH_REMATCH[1]}"
-      # Write this line as-is
-      echo "$line" >> "$TEMP_YAML"
+    echo "Updating client '$client_name' with IP: $client_ip"
 
-      # Look for the client in our updated list
-      found=false
-      for (( i=0; i<${#UPDATED_CLIENTS[@]}; i++ )); do
-        client_index=${UPDATED_CLIENTS[$i]}
-        client_yaml_name=$(yq ".clients[$client_index].name" "$CONFIG_FILE")
+    # Use a simple sed approach to update the YAML file
+    # This preserves formatting better than yq for complex files
+    awk -v name="$client_name" -v ip="$client_ip" '
+    BEGIN { in_client = 0; found = 0; }
 
-        # If this is a client we updated, modify the internal_ip line when we reach it
-        if [ "$client_yaml_name" = "$client_name" ]; then
-          found=true
-          client_ip=${UPDATED_IPS[$i]}
-          update_ip=true
-        fi
-      done
-    elif [[ "$line" =~ ^([[:space:]]*)internal_ip:[[:space:]]*(.*)$ ]] && [ "$found" = true ] && [ "$update_ip" = true ]; then
-      # Replace the internal_ip line for the found client
-      indent="${BASH_REMATCH[1]}"
-      echo "${indent}internal_ip: $client_ip" >> "$TEMP_YAML"
-      update_ip=false
-      found=false
+    # When we find a client name line, check if it matches our target
+    /^ *- *name:/ {
+      if ($0 ~ name) {
+        in_client = 1;
+        found = 1;
+      } else {
+        in_client = 0;
+      }
+    }
+
+    # If we are in the target client section and find the internal_ip line, replace it
+    /^ *internal_ip:/ {
+      if (in_client) {
+        # Extract and maintain the indentation
+        match($0, /^ */);
+        indent = substr($0, RSTART, RLENGTH);
+        print indent "internal_ip: " ip;
+        next;
+      }
+    }
+
+    # Print all other lines unchanged
+    { print; }
+
+    END {
+      if (!found) {
+        print "Error: Could not find client " name " in YAML file" > "/dev/stderr";
+        exit 1;
+      }
+    }' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp"
+
+    # Check if awk completed successfully
+    if [ $? -eq 0 ]; then
+      mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
     else
-      # Write all other lines unchanged
-      echo "$line" >> "$TEMP_YAML"
+      echo "Error updating YAML for client '$client_name'. Changes not applied."
+      rm -f "${CONFIG_FILE}.tmp"
+      exit 1
     fi
-  done < "$CONFIG_FILE"
-
-  # Replace the original file with our updated version
-  mv "$TEMP_YAML" "$CONFIG_FILE"
+  done
 
   echo "YAML file updated with preserved formatting."
 else
