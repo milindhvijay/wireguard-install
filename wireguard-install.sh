@@ -385,6 +385,183 @@ else
   CLIENTS_REMOVED=false
 fi
 
+# Check for updates to existing clients
+CLIENTS_UPDATED=false
+UPDATED_CLIENT_NAMES=()
+CLIENT_CHANGES=()
+
+echo "Checking for updates to existing clients..."
+
+# Loop through all clients that exist in both YAML and server config
+for client_name in "${EXISTING_CLIENTS[@]}"; do
+  # Find if client exists in YAML
+  client_index=-1
+  for ((i=0; i<${#YAML_CLIENTS[@]}; i++)); do
+    if [ "${YAML_CLIENTS[i]}" = "$client_name" ]; then
+      client_index=$i
+      break
+    fi
+  done
+
+  # Skip if client not in YAML (these were handled by removal process)
+  if [ $client_index -eq -1 ]; then
+    continue
+  fi
+
+  # Get client properties from YAML
+  YAML_IP=$(yq ".clients[$client_index].internal_ip" "$CONFIG_FILE")
+  YAML_DNS=$(yq ".clients[$client_index].dns" "$CONFIG_FILE")
+  YAML_ALLOWED_IPS=$(yq ".clients[$client_index].allowed_ips" "$CONFIG_FILE")
+  YAML_KEEPALIVE=$(yq ".clients[$client_index].persistent_keepalive" "$CONFIG_FILE")
+  YAML_MTU=$(yq ".clients[$client_index].mtu" "$CONFIG_FILE")
+
+  # Get current client properties from config file
+  CLIENT_CONFIG="${CLIENT_OUTPUT_DIR}/${client_name}.conf"
+  if [ ! -f "$CLIENT_CONFIG" ]; then
+    echo "Warning: Config file for existing client '$client_name' not found, skipping update."
+    continue
+  fi
+
+  # Extract current values from client config
+  CURRENT_IP=$(grep "^Address = " "$CLIENT_CONFIG" | cut -d ' ' -f 3)
+  CURRENT_DNS=$(grep "^DNS = " "$CLIENT_CONFIG" | cut -d ' ' -f 3)
+  CURRENT_ALLOWED_IPS=$(grep "^AllowedIPs = " "$CLIENT_CONFIG" | cut -d ' ' -f 3)
+  CURRENT_KEEPALIVE=$(grep "^PersistentKeepalive = " "$CLIENT_CONFIG" | cut -d ' ' -f 3)
+  CURRENT_MTU=$(grep "^MTU = " "$CLIENT_CONFIG" | cut -d ' ' -f 3)
+
+  # Strip CIDR notation for comparison if present
+  CURRENT_IP_STRIPPED=${CURRENT_IP%/*}
+  YAML_IP_STRIPPED=${YAML_IP%/*}
+
+  # Check for changes
+  CHANGES=""
+
+  # Special handling for null values from YAML
+  [ "$YAML_MTU" = "null" ] && YAML_MTU=$DEFAULT_MTU
+
+  # Compare values (handling null/unset cases)
+  if [ "$YAML_IP" != "null" ] && [ "$YAML_IP_STRIPPED" != "$CURRENT_IP_STRIPPED" ]; then
+    CHANGES="${CHANGES}IP ($CURRENT_IP → $YAML_IP), "
+  fi
+  if [ "$YAML_DNS" != "null" ] && [ "$YAML_DNS" != "$CURRENT_DNS" ]; then
+    CHANGES="${CHANGES}DNS ($CURRENT_DNS → $YAML_DNS), "
+  elif [ "$YAML_DNS" = "null" ] && [ -n "$CURRENT_DNS" ]; then
+    CHANGES="${CHANGES}DNS (removed), "
+  fi
+  if [ "$YAML_ALLOWED_IPS" != "null" ] && [ "$YAML_ALLOWED_IPS" != "$CURRENT_ALLOWED_IPS" ]; then
+    CHANGES="${CHANGES}AllowedIPs ($CURRENT_ALLOWED_IPS → $YAML_ALLOWED_IPS), "
+  fi
+  if [ "$YAML_KEEPALIVE" != "null" ] && [ "$YAML_KEEPALIVE" != "$CURRENT_KEEPALIVE" ]; then
+    CHANGES="${CHANGES}Keepalive ($CURRENT_KEEPALIVE → $YAML_KEEPALIVE), "
+  elif [ "$YAML_KEEPALIVE" = "null" ] && [ -n "$CURRENT_KEEPALIVE" ]; then
+    CHANGES="${CHANGES}Keepalive (removed), "
+  fi
+  if [ "$YAML_MTU" != "$CURRENT_MTU" ]; then
+    CHANGES="${CHANGES}MTU ($CURRENT_MTU → $YAML_MTU), "
+  fi
+
+  # If no changes detected, skip this client
+  if [ -z "$CHANGES" ]; then
+    continue
+  fi
+
+  echo "Updating client '$client_name' with changes: ${CHANGES%, }"
+  CLIENTS_UPDATED=true
+  UPDATED_CLIENT_NAMES+=("$client_name")
+  CLIENT_CHANGES+=("${CHANGES%, }")
+
+  # Backup client config
+  cp "$CLIENT_CONFIG" "${CLIENT_CONFIG}.bak"
+
+  # Generate updated client config
+  cat > "$CLIENT_CONFIG" << EOF
+[Interface]
+PrivateKey = $(grep "^PrivateKey = " "$CLIENT_CONFIG" | cut -d ' ' -f 3)
+Address = $YAML_IP
+EOF
+
+  # Add MTU
+  if [ "$YAML_MTU" != "null" ]; then
+    echo "MTU = $YAML_MTU" >> "$CLIENT_CONFIG"
+  else
+    echo "MTU = $DEFAULT_MTU" >> "$CLIENT_CONFIG"
+  fi
+
+  # Add DNS if specified
+  if [ "$YAML_DNS" != "null" ]; then
+    echo "DNS = $YAML_DNS" >> "$CLIENT_CONFIG"
+  fi
+
+  # Add server as peer in client config
+  cat >> "$CLIENT_CONFIG" << EOF
+
+[Peer]
+PublicKey = $SERVER_PUBLIC_KEY
+Endpoint = ${SERVER_ENDPOINT}:${SERVER_PORT}
+AllowedIPs = $YAML_ALLOWED_IPS
+EOF
+
+  # Add persistent keepalive if specified
+  if [ "$YAML_KEEPALIVE" != "null" ]; then
+    echo "PersistentKeepalive = $YAML_KEEPALIVE" >> "$CLIENT_CONFIG"
+  fi
+
+  # Update server config if IP changed
+  if [ "$YAML_IP" != "null" ] && [ "$YAML_IP_STRIPPED" != "$CURRENT_IP_STRIPPED" ]; then
+    # Use temporary file to rebuild server config with updated IP
+    TEMP_SERVER_CONFIG=$(mktemp)
+
+    # Flag to identify when we're in the peer section for this client
+    in_target_peer=false
+
+    # Process server config line by line
+    while IFS= read -r line || [ -n "$line" ]; do
+      # Check if we've found the peer section for this client
+      if [[ "$line" == "[Peer]" ]]; then
+        echo "$line" >> "$TEMP_SERVER_CONFIG"
+        # Read the next line to get client name
+        read -r next_line
+
+        if [[ "$next_line" =~ ^#\ (.+)$ ]]; then
+          peer_name="${BASH_REMATCH[1]}"
+
+          # Check if this is the client we're updating
+          if [ "$peer_name" = "$client_name" ]; then
+            in_target_peer=true
+          else
+            in_target_peer=false
+          fi
+        fi
+        # Write the name line no matter what
+        echo "$next_line" >> "$TEMP_SERVER_CONFIG"
+      elif [ "$in_target_peer" = true ] && [[ "$line" =~ ^AllowedIPs\ =\ (.+)$ ]]; then
+        # Replace the AllowedIPs line with the new IP
+        echo "AllowedIPs = $YAML_IP" >> "$TEMP_SERVER_CONFIG"
+      else
+        # Write all other lines unchanged
+        echo "$line" >> "$TEMP_SERVER_CONFIG"
+      fi
+    done < "$SERVER_CONFIG"
+
+    # Replace the original file with the updated one
+    mv "$TEMP_SERVER_CONFIG" "$SERVER_CONFIG"
+    chmod 600 "$SERVER_CONFIG"
+  fi
+
+  # Generate updated QR code
+  qrencode -t png -o "${CLIENT_OUTPUT_DIR}/${client_name}.png" < "${CLIENT_CONFIG}"
+  echo "Updated QR code saved as: ${CLIENT_OUTPUT_DIR}/${client_name}.png"
+done
+
+if [ "$CLIENTS_UPDATED" = true ]; then
+  echo "Updated ${#UPDATED_CLIENT_NAMES[@]} clients:"
+  for ((i=0; i<${#UPDATED_CLIENT_NAMES[@]}; i++)); do
+    echo " - ${UPDATED_CLIENT_NAMES[i]}: ${CLIENT_CHANGES[i]}"
+  done
+else
+  echo "No client updates needed."
+fi
+
 # Process each client from YAML
 CLIENT_COUNT=$(yq '.clients | length' "$CONFIG_FILE")
 ADDED_NEW_CLIENTS=false
