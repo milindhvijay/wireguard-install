@@ -391,16 +391,48 @@ if [ "$YAML_MODIFIED" = true ]; then
   # Create a backup of the original YAML
   cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
 
-  # Update each client that got an auto-assigned IP
-  for (( i=0; i<${#UPDATED_CLIENTS[@]}; i++ )); do
-    client_index=${UPDATED_CLIENTS[$i]}
-    client_ip=${UPDATED_IPS[$i]}
+  # Create a temporary file for the updated YAML
+  TEMP_YAML=$(mktemp)
 
-    # Use yq to update the YAML file
-    yq -i ".clients[$client_index].internal_ip = \"$client_ip\"" "$CONFIG_FILE"
-  done
+  # Process the YAML file line by line to preserve formatting
+  while IFS= read -r line; do
+    # Check if the line starts with a client entry that needs updating
+    if [[ "$line" =~ ^[[:space:]]*-[[:space:]]*name:[[:space:]]*(.+)$ ]]; then
+      client_name="${BASH_REMATCH[1]}"
+      # Write this line as-is
+      echo "$line" >> "$TEMP_YAML"
 
-  echo "YAML file updated."
+      # Look for the client in our updated list
+      found=false
+      for (( i=0; i<${#UPDATED_CLIENTS[@]}; i++ )); do
+        client_index=${UPDATED_CLIENTS[$i]}
+        client_yaml_name=$(yq ".clients[$client_index].name" "$CONFIG_FILE")
+
+        # If this is a client we updated, modify the internal_ip line when we reach it
+        if [ "$client_yaml_name" = "$client_name" ]; then
+          found=true
+          client_ip=${UPDATED_IPS[$i]}
+          update_ip=true
+        fi
+      done
+    elif [[ "$line" =~ ^([[:space:]]*)internal_ip:[[:space:]]*(.*)$ ]] && [ "$found" = true ] && [ "$update_ip" = true ]; then
+      # Replace the internal_ip line for the found client
+      indent="${BASH_REMATCH[1]}"
+      echo "${indent}internal_ip: $client_ip" >> "$TEMP_YAML"
+      update_ip=false
+      found=false
+    else
+      # Write all other lines unchanged
+      echo "$line" >> "$TEMP_YAML"
+    fi
+  done < "$CONFIG_FILE"
+
+  # Replace the original file with our updated version
+  mv "$TEMP_YAML" "$CONFIG_FILE"
+
+  echo "YAML file updated with preserved formatting."
+else
+  echo "No changes to YAML file needed."
 fi
 
 # Only restart services if we made changes
