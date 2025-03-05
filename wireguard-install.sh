@@ -82,6 +82,10 @@ else
   fi
 fi
 
+# Default PostUp/PostDown rules with placeholder for host interface
+DEFAULT_POST_UP="iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o %h -j MASQUERADE; ip6tables -A FORWARD -i %i -j ACCEPT; ip6tables -t nat -A POSTROUTING -o %h -j MASQUERADE"
+DEFAULT_POST_DOWN="iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o %h -j MASQUERADE; ip6tables -D FORWARD -i %i -j ACCEPT; ip6tables -t nat -D POSTROUTING -o %h -j MASQUERADE"
+
 # Create server config
 cat > "$SERVER_CONFIG" << EOF
 [Interface]
@@ -97,18 +101,26 @@ else
   echo "MTU = $DEFAULT_MTU" >> "$SERVER_CONFIG"
 fi
 
+# Process PostUp rules
 if [ "$SERVER_POST_UP" != "null" ]; then
-  echo "PostUp = $SERVER_POST_UP" >> "$SERVER_CONFIG"
+  # Replace %h with the actual host interface in custom rules
+  PROCESSED_POST_UP="${SERVER_POST_UP//%h/$SERVER_HOST_INTERFACE}"
+  echo "PostUp = $PROCESSED_POST_UP" >> "$SERVER_CONFIG"
 else
-  # Add default PostUp rules with the selected host interface
-  echo "PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o $SERVER_HOST_INTERFACE -j MASQUERADE; ip6tables -A FORWARD -i %i -j ACCEPT; ip6tables -t nat -A POSTROUTING -o $SERVER_HOST_INTERFACE -j MASQUERADE" >> "$SERVER_CONFIG"
+  # Use default rules with actual host interface
+  PROCESSED_POST_UP="${DEFAULT_POST_UP//%h/$SERVER_HOST_INTERFACE}"
+  echo "PostUp = $PROCESSED_POST_UP" >> "$SERVER_CONFIG"
 fi
 
+# Process PostDown rules
 if [ "$SERVER_POST_DOWN" != "null" ]; then
-  echo "PostDown = $SERVER_POST_DOWN" >> "$SERVER_CONFIG"
+  # Replace %h with the actual host interface in custom rules
+  PROCESSED_POST_DOWN="${SERVER_POST_DOWN//%h/$SERVER_HOST_INTERFACE}"
+  echo "PostDown = $PROCESSED_POST_DOWN" >> "$SERVER_CONFIG"
 else
-  # Add default PostDown rules with the selected host interface
-  echo "PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o $SERVER_HOST_INTERFACE -j MASQUERADE; ip6tables -D FORWARD -i %i -j ACCEPT; ip6tables -t nat -D POSTROUTING -o $SERVER_HOST_INTERFACE -j MASQUERADE" >> "$SERVER_CONFIG"
+  # Use default rules with actual host interface
+  PROCESSED_POST_DOWN="${DEFAULT_POST_DOWN//%h/$SERVER_HOST_INTERFACE}"
+  echo "PostDown = $PROCESSED_POST_DOWN" >> "$SERVER_CONFIG"
 fi
 
 # Set secure permissions on server config
