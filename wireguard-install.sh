@@ -29,6 +29,7 @@ SERVER_CONFIG="/etc/wireguard/wg0.conf"
 KEYS_DIR="${CLIENT_OUTPUT_DIR}/keys"
 DEFAULT_MTU=1420
 DEFAULT_PORT=51820
+YAML_MODIFIED=false
 
 # Function to get IP address of an interface
 get_interface_ip() {
@@ -44,6 +45,37 @@ get_interface_ip() {
   fi
 
   echo "$ip_address"
+}
+
+# Function to calculate next available IP in range
+get_next_available_ip() {
+  local network_base=$1
+  local network_prefix=$2
+  local used_ips=$3
+
+  # Calculate network base and range
+  IFS='.' read -r -a octets <<< "$network_base"
+  local start_ip="${octets[0]}.${octets[1]}.${octets[2]}.2"  # Start from .2 as .1 is server
+  local end_num=254  # Max for typical subnet
+
+  # If prefix is small (e.g., /16), set appropriate range
+  if [ "$network_prefix" -lt 24 ]; then
+    # For now, we'll still use the same octet for simplicity
+    # but could expand to full subnet range if needed
+    end_num=254
+  fi
+
+  # Find next available IP
+  for ((i=2; i<=end_num; i++)); do
+    local candidate_ip="${octets[0]}.${octets[1]}.${octets[2]}.$i"
+    if ! echo "$used_ips" | grep -q "$candidate_ip"; then
+      echo "$candidate_ip"
+      return 0
+    fi
+  done
+
+  echo "Error: No available IPs in the subnet"
+  return 1
 }
 
 # Check if config file exists
@@ -126,6 +158,49 @@ if [ "$SERVER_ENDPOINT" == "null" ] || [ -z "$SERVER_ENDPOINT" ] || [ "$SERVER_E
   echo "Automatically detected endpoint IP: $SERVER_ENDPOINT"
 fi
 
+# Parse server internal IP to get network
+if ! [[ "$SERVER_INTERNAL_IP" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.([0-9]+)/([0-9]+)$ ]]; then
+  echo "Error: Invalid server internal IP format. Expected format: x.x.x.x/y"
+  exit 1
+fi
+
+NETWORK_BASE="${BASH_REMATCH[1]}"
+SERVER_IP_LAST_OCTET="${BASH_REMATCH[2]}"
+NETWORK_PREFIX="${BASH_REMATCH[3]}"
+NETWORK="${NETWORK_BASE}.0/${NETWORK_PREFIX}"
+
+echo "Server network: $NETWORK (Base: $NETWORK_BASE, Prefix: $NETWORK_PREFIX)"
+
+# Collect all used IPs
+USED_IPS="$NETWORK_BASE.$SERVER_IP_LAST_OCTET"  # Server IP is used
+
+# Get existing client IPs from YAML
+CLIENT_COUNT=$(yq '.clients | length' "$CONFIG_FILE")
+for (( i=0; i<$CLIENT_COUNT; i++ )); do
+  CLIENT_IP=$(yq ".clients[$i].internal_ip" "$CONFIG_FILE")
+  if [ "$CLIENT_IP" != "null" ] && [ -n "$CLIENT_IP" ]; then
+    # Strip the CIDR notation if present
+    CLIENT_IP=${CLIENT_IP%/*}
+    USED_IPS="$USED_IPS
+$CLIENT_IP"
+  fi
+done
+
+# Collect IPs from existing WireGuard config if it exists
+if [ -f "$SERVER_CONFIG" ]; then
+  while read -r line; do
+    if [[ "$line" =~ ^AllowedIPs\ =\ (.+)$ ]]; then
+      ip="${BASH_REMATCH[1]}"
+      # Strip the CIDR notation if present
+      ip=${ip%/*}
+      USED_IPS="$USED_IPS
+$ip"
+    fi
+  done < "$SERVER_CONFIG"
+fi
+
+echo "Used IPs in network: $(echo "$USED_IPS" | tr '\n' ' ')"
+
 # Default PostUp/PostDown rules with placeholder for host interface
 DEFAULT_POST_UP="iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o %h -j MASQUERADE; ip6tables -A FORWARD -i %i -j ACCEPT; ip6tables -t nat -A POSTROUTING -o %h -j MASQUERADE"
 DEFAULT_POST_DOWN="iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o %h -j MASQUERADE; ip6tables -D FORWARD -i %i -j ACCEPT; ip6tables -t nat -D POSTROUTING -o %h -j MASQUERADE"
@@ -195,6 +270,8 @@ echo "Existing clients: ${EXISTING_CLIENTS[*]}"
 # Process each client from YAML
 CLIENT_COUNT=$(yq '.clients | length' "$CONFIG_FILE")
 ADDED_NEW_CLIENTS=false
+UPDATED_CLIENTS=()
+UPDATED_IPS=()
 
 for (( i=0; i<$CLIENT_COUNT; i++ )); do
   CLIENT_NAME=$(yq ".clients[$i].name" "$CONFIG_FILE")
@@ -222,6 +299,29 @@ for (( i=0; i<$CLIENT_COUNT; i++ )); do
   CLIENT_ALLOWED_IPS=$(yq ".clients[$i].allowed_ips" "$CONFIG_FILE")
   CLIENT_KEEPALIVE=$(yq ".clients[$i].persistent_keepalive" "$CONFIG_FILE")
   CLIENT_MTU=$(yq ".clients[$i].mtu" "$CONFIG_FILE")
+
+  # Assign IP if not specified
+  if [ "$CLIENT_IP" == "null" ] || [ -z "$CLIENT_IP" ]; then
+    # Get next available IP
+    NEW_IP=$(get_next_available_ip "$NETWORK_BASE" "$NETWORK_PREFIX" "$USED_IPS")
+    if [ $? -ne 0 ]; then
+      echo "$NEW_IP"  # This contains the error message
+      exit 1
+    fi
+
+    # Add CIDR notation for client
+    CLIENT_IP="${NEW_IP}/32"
+    echo "Assigned IP address $CLIENT_IP to client $CLIENT_NAME"
+
+    # Add to used IPs
+    USED_IPS="$USED_IPS
+$NEW_IP"
+
+    # Track for YAML update
+    UPDATED_CLIENTS+=($i)
+    UPDATED_IPS+=("$CLIENT_IP")
+    YAML_MODIFIED=true
+  fi
 
   # Generate client keys
   generate_keys "$CLIENT_NAME"
@@ -283,6 +383,25 @@ EOF
   echo "QR code image saved as: ${CLIENT_OUTPUT_DIR}/${CLIENT_NAME}.png"
   echo ""
 done
+
+# Update YAML file with assigned IPs
+if [ "$YAML_MODIFIED" = true ]; then
+  echo "Updating YAML file with assigned IP addresses..."
+
+  # Create a backup of the original YAML
+  cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
+
+  # Update each client that got an auto-assigned IP
+  for (( i=0; i<${#UPDATED_CLIENTS[@]}; i++ )); do
+    client_index=${UPDATED_CLIENTS[$i]}
+    client_ip=${UPDATED_IPS[$i]}
+
+    # Use yq to update the YAML file
+    yq -i ".clients[$client_index].internal_ip = \"$client_ip\"" "$CONFIG_FILE"
+  done
+
+  echo "YAML file updated."
+fi
 
 # Only restart services if we made changes
 if [ "$SERVER_EXISTS" = false ] || [ "$ADDED_NEW_CLIENTS" = true ]; then
