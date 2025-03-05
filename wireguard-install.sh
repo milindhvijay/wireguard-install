@@ -551,6 +551,13 @@ EOF
   # Generate updated QR code
   qrencode -t png -o "${CLIENT_OUTPUT_DIR}/${client_name}.png" < "${CLIENT_CONFIG}"
   echo "Updated QR code saved as: ${CLIENT_OUTPUT_DIR}/${client_name}.png"
+
+  # Display QR code in terminal for the updated client
+  echo "==============================================="
+  echo "QR Code for updated client: $client_name"
+  echo "==============================================="
+  qrencode -t ansiutf8 < "${CLIENT_CONFIG}"
+  echo "==============================================="
 done
 
 if [ "$CLIENTS_UPDATED" = true ]; then
