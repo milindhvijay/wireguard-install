@@ -47,9 +47,14 @@ generate_keys() {
   local public_key_file="${KEYS_DIR}/${name}.public"
 
   if [ ! -f "$private_key_file" ]; then
+    echo "Generating new keys for $name..."
     wg genkey | tee "$private_key_file" | wg pubkey > "$public_key_file"
     chmod 600 "$private_key_file"
+    return 0  # New keys generated
   fi
+
+  echo "Using existing keys for $name"
+  return 1  # Existing keys used
 }
 
 # Generate server keys
@@ -126,19 +131,34 @@ fi
 # Set secure permissions on server config
 chmod 600 "$SERVER_CONFIG"
 
+# Keep track of processed clients to avoid duplicates
+declare -A PROCESSED_CLIENTS
+
 # Process each client
 CLIENT_COUNT=$(yq '.clients | length' "$CONFIG_FILE")
 
 for (( i=0; i<$CLIENT_COUNT; i++ )); do
   CLIENT_NAME=$(yq ".clients[$i].name" "$CONFIG_FILE")
+
+  # Skip if this client was already processed in this run
+  if [[ -n "${PROCESSED_CLIENTS[$CLIENT_NAME]}" ]]; then
+    echo "Skipping duplicate client: $CLIENT_NAME (already processed)"
+    continue
+  fi
+
+  PROCESSED_CLIENTS[$CLIENT_NAME]=1
   CLIENT_IP=$(yq ".clients[$i].internal_ip" "$CONFIG_FILE")
   CLIENT_DNS=$(yq ".clients[$i].dns" "$CONFIG_FILE")
   CLIENT_ALLOWED_IPS=$(yq ".clients[$i].allowed_ips" "$CONFIG_FILE")
   CLIENT_KEEPALIVE=$(yq ".clients[$i].persistent_keepalive" "$CONFIG_FILE")
   CLIENT_MTU=$(yq ".clients[$i].mtu" "$CONFIG_FILE")
 
-  # Generate client keys
-  generate_keys "$CLIENT_NAME"
+  # Generate client keys or use existing ones
+  IS_NEW_CLIENT=false
+  if generate_keys "$CLIENT_NAME"; then
+    IS_NEW_CLIENT=true
+  fi
+
   CLIENT_PRIVATE_KEY=$(cat "${KEYS_DIR}/${CLIENT_NAME}.private")
   CLIENT_PUBLIC_KEY=$(cat "${KEYS_DIR}/${CLIENT_NAME}.public")
 
@@ -153,26 +173,32 @@ EOF
 
   # Create client config
   CLIENT_CONFIG="${CLIENT_OUTPUT_DIR}/${CLIENT_NAME}.conf"
-  cat > "$CLIENT_CONFIG" << EOF
+
+  # Check if config already exists and we're not recreating
+  if [ -f "$CLIENT_CONFIG" ] && [ "$IS_NEW_CLIENT" = false ]; then
+    echo "Client config for $CLIENT_NAME already exists, not overwriting."
+  else
+    # Create new client config
+    cat > "$CLIENT_CONFIG" << EOF
 [Interface]
 PrivateKey = $CLIENT_PRIVATE_KEY
 Address = $CLIENT_IP
 EOF
 
-  # Add MTU to client config (default 1420 if not specified)
-  if [ "$CLIENT_MTU" != "null" ]; then
-    echo "MTU = $CLIENT_MTU" >> "$CLIENT_CONFIG"
-  else
-    echo "MTU = $DEFAULT_MTU" >> "$CLIENT_CONFIG"
-  fi
+    # Add MTU to client config (default 1420 if not specified)
+    if [ "$CLIENT_MTU" != "null" ]; then
+      echo "MTU = $CLIENT_MTU" >> "$CLIENT_CONFIG"
+    else
+      echo "MTU = $DEFAULT_MTU" >> "$CLIENT_CONFIG"
+    fi
 
-  # Add DNS if specified
-  if [ "$CLIENT_DNS" != "null" ]; then
-    echo "DNS = $CLIENT_DNS" >> "$CLIENT_CONFIG"
-  fi
+    # Add DNS if specified
+    if [ "$CLIENT_DNS" != "null" ]; then
+      echo "DNS = $CLIENT_DNS" >> "$CLIENT_CONFIG"
+    fi
 
-  # Add server as peer in client config
-  cat >> "$CLIENT_CONFIG" << EOF
+    # Add server as peer in client config
+    cat >> "$CLIENT_CONFIG" << EOF
 
 [Peer]
 PublicKey = $SERVER_PUBLIC_KEY
@@ -180,22 +206,25 @@ Endpoint = ${SERVER_ENDPOINT}:${SERVER_PORT}
 AllowedIPs = $CLIENT_ALLOWED_IPS
 EOF
 
-  # Add persistent keepalive if specified
-  if [ "$CLIENT_KEEPALIVE" != "null" ]; then
-    echo "PersistentKeepalive = $CLIENT_KEEPALIVE" >> "$CLIENT_CONFIG"
+    # Add persistent keepalive if specified
+    if [ "$CLIENT_KEEPALIVE" != "null" ]; then
+      echo "PersistentKeepalive = $CLIENT_KEEPALIVE" >> "$CLIENT_CONFIG"
+    fi
+
+    echo "Generated config for client: $CLIENT_NAME"
+
+    # Generate and display QR code for this client
+    echo "==============================================="
+    echo "QR Code for client: $CLIENT_NAME"
+    echo "==============================================="
+    qrencode -t ansiutf8 < "${CLIENT_CONFIG}"
+    echo "==============================================="
+
+    # Also save QR code as image file
+    qrencode -t png -o "${CLIENT_OUTPUT_DIR}/${CLIENT_NAME}.png" < "${CLIENT_CONFIG}"
+    echo "QR code image saved as: ${CLIENT_OUTPUT_DIR}/${CLIENT_NAME}.png"
+    echo ""
   fi
-
-  # Generate and display QR code for this client
-  echo "==============================================="
-  echo "QR Code for client: $CLIENT_NAME"
-  echo "==============================================="
-  qrencode -t ansiutf8 < "${CLIENT_CONFIG}"
-  echo "==============================================="
-
-  # Also save QR code as image file
-  qrencode -t png -o "${CLIENT_OUTPUT_DIR}/${CLIENT_NAME}.png" < "${CLIENT_CONFIG}"
-  echo "QR code image saved as: ${CLIENT_OUTPUT_DIR}/${CLIENT_NAME}.png"
-  echo ""
 done
 
 # Enable IP forwarding
