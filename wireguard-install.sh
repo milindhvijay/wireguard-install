@@ -29,6 +29,22 @@ SERVER_CONFIG="/etc/wireguard/wg0.conf"
 KEYS_DIR="${CLIENT_OUTPUT_DIR}/keys"
 DEFAULT_MTU=1420
 
+# Function to get IP address of an interface
+get_interface_ip() {
+  local interface=$1
+  local ip_address
+
+  # Try to get IPv4 address
+  ip_address=$(ip -4 addr show dev "$interface" | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n 1)
+
+  if [ -z "$ip_address" ]; then
+    echo "Error: No IPv4 address found for interface $interface"
+    return 1
+  fi
+
+  echo "$ip_address"
+}
+
 # Check if config file exists
 if [ ! -f "$CONFIG_FILE" ]; then
   echo "Error: Config file $CONFIG_FILE not found."
@@ -91,6 +107,16 @@ else
     ip -o link show | awk -F': ' '{print $2}'
     exit 1
   fi
+fi
+
+# Determine the endpoint IP address
+if [ "$SERVER_ENDPOINT" == "null" ] || [ -z "$SERVER_ENDPOINT" ] || [ "$SERVER_ENDPOINT" == "auto" ]; then
+  SERVER_ENDPOINT=$(get_interface_ip "$SERVER_HOST_INTERFACE")
+  if [ $? -ne 0 ]; then
+    echo "$SERVER_ENDPOINT" # This will contain the error message
+    exit 1
+  fi
+  echo "Automatically detected endpoint IP: $SERVER_ENDPOINT"
 fi
 
 # Default PostUp/PostDown rules with placeholder for host interface
@@ -277,4 +303,4 @@ if [ "$ADDED_NEW_CLIENTS" = false ]; then
   echo "No new clients added."
 fi
 
-echo "WireGuard setup complete using host interface: $SERVER_HOST_INTERFACE"
+echo "WireGuard setup complete using host interface: $SERVER_HOST_INTERFACE with endpoint: $SERVER_ENDPOINT"
