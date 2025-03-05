@@ -62,9 +62,25 @@ SERVER_ENDPOINT=$(yq '.server.endpoint' "$CONFIG_FILE")
 SERVER_PORT=$(yq '.server.port' "$CONFIG_FILE")
 SERVER_INTERNAL_IP=$(yq '.server.internal_ip' "$CONFIG_FILE")
 SERVER_INTERFACE=$(yq '.server.interface_name' "$CONFIG_FILE" || echo "wg0")
+SERVER_HOST_INTERFACE=$(yq '.server.host_interface' "$CONFIG_FILE")
 SERVER_MTU=$(yq '.server.mtu' "$CONFIG_FILE")
 SERVER_POST_UP=$(yq '.server.post_up' "$CONFIG_FILE")
 SERVER_POST_DOWN=$(yq '.server.post_down' "$CONFIG_FILE")
+
+# Determine the host interface to use
+if [ "$SERVER_HOST_INTERFACE" == "null" ] || [ -z "$SERVER_HOST_INTERFACE" ]; then
+  # Default to the interface with the default route if not specified
+  SERVER_HOST_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -n 1)
+  echo "No host interface specified, using: $SERVER_HOST_INTERFACE"
+else
+  # Verify the specified interface exists
+  if ! ip link show dev "$SERVER_HOST_INTERFACE" &>/dev/null; then
+    echo "Error: Specified host interface '$SERVER_HOST_INTERFACE' not found."
+    echo "Available interfaces:"
+    ip -o link show | awk -F': ' '{print $2}'
+    exit 1
+  fi
+fi
 
 # Create server config
 cat > "$SERVER_CONFIG" << EOF
@@ -84,15 +100,15 @@ fi
 if [ "$SERVER_POST_UP" != "null" ]; then
   echo "PostUp = $SERVER_POST_UP" >> "$SERVER_CONFIG"
 else
-  # Add default PostUp rules if none specified
-  echo "PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o $(ip route | grep default | awk '{print $5}') -j MASQUERADE; ip6tables -A FORWARD -i %i -j ACCEPT; ip6tables -t nat -A POSTROUTING -o $(ip route | grep default | awk '{print $5}') -j MASQUERADE" >> "$SERVER_CONFIG"
+  # Add default PostUp rules with the selected host interface
+  echo "PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o $SERVER_HOST_INTERFACE -j MASQUERADE; ip6tables -A FORWARD -i %i -j ACCEPT; ip6tables -t nat -A POSTROUTING -o $SERVER_HOST_INTERFACE -j MASQUERADE" >> "$SERVER_CONFIG"
 fi
 
 if [ "$SERVER_POST_DOWN" != "null" ]; then
   echo "PostDown = $SERVER_POST_DOWN" >> "$SERVER_CONFIG"
 else
-  # Add default PostDown rules if none specified
-  echo "PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o $(ip route | grep default | awk '{print $5}') -j MASQUERADE; ip6tables -D FORWARD -i %i -j ACCEPT; ip6tables -t nat -D POSTROUTING -o $(ip route | grep default | awk '{print $5}') -j MASQUERADE" >> "$SERVER_CONFIG"
+  # Add default PostDown rules with the selected host interface
+  echo "PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o $SERVER_HOST_INTERFACE -j MASQUERADE; ip6tables -D FORWARD -i %i -j ACCEPT; ip6tables -t nat -D POSTROUTING -o $SERVER_HOST_INTERFACE -j MASQUERADE" >> "$SERVER_CONFIG"
 fi
 
 # Set secure permissions on server config
@@ -185,4 +201,4 @@ if command -v ufw &> /dev/null && ufw status | grep -q "active"; then
   ufw reload >/dev/null 2>&1
 fi
 
-echo "WireGuard setup complete!"
+echo "WireGuard setup complete using host interface: $SERVER_HOST_INTERFACE"
