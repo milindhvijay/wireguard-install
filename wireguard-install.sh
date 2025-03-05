@@ -699,7 +699,7 @@ if [ "$YAML_MODIFIED" = true ]; then
 fi
 
 # Only restart services if we made changes
-if [ "$SERVER_EXISTS" = false ] || [ "$ADDED_NEW_CLIENTS" = true ] || [ "$CLIENTS_REMOVED" = true ]; then
+if [ "$SERVER_EXISTS" = false ] || [ "$ADDED_NEW_CLIENTS" = true ] || [ "$CLIENTS_REMOVED" = true ] || [ "$CLIENTS_UPDATED" = true ]; then
   # Enable IP forwarding
   echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/99-wireguard.conf
   echo "net.ipv6.conf.all.forwarding = 1" >> /etc/sysctl.d/99-wireguard.conf
@@ -720,8 +720,8 @@ else
   echo "No changes made to WireGuard configuration."
 fi
 
-if [ "$ADDED_NEW_CLIENTS" = false ] && [ "$CLIENTS_REMOVED" = false ]; then
-  echo "No clients added or removed."
+if [ "$ADDED_NEW_CLIENTS" = false ] && [ "$CLIENTS_REMOVED" = false ] && [ "$CLIENTS_UPDATED" = false ]; then
+  echo "No clients added, removed, or updated."
 fi
 
 echo "WireGuard setup complete using host interface: $SERVER_HOST_INTERFACE with endpoint: $SERVER_ENDPOINT:$SERVER_PORT"
