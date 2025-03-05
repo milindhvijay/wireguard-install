@@ -254,6 +254,13 @@ else
   cp "$SERVER_CONFIG" "${SERVER_CONFIG}.bak"
 fi
 
+# Get list of YAML clients for comparison with existing clients
+YAML_CLIENTS=()
+for (( i=0; i<$CLIENT_COUNT; i++ )); do
+  client_name=$(yq ".clients[$i].name" "$CONFIG_FILE")
+  YAML_CLIENTS+=("$client_name")
+done
+
 # Get list of existing clients by parsing server config
 EXISTING_CLIENTS=()
 if [ -f "$SERVER_CONFIG" ]; then
@@ -266,6 +273,117 @@ if [ -f "$SERVER_CONFIG" ]; then
 fi
 
 echo "Existing clients: ${EXISTING_CLIENTS[*]}"
+
+# Identify clients to remove (exist in server config but not in YAML)
+CLIENTS_TO_REMOVE=()
+for existing in "${EXISTING_CLIENTS[@]}"; do
+  client_in_yaml=false
+  for yaml_client in "${YAML_CLIENTS[@]}"; do
+    if [ "$existing" = "$yaml_client" ]; then
+      client_in_yaml=true
+      break
+    fi
+  done
+
+  if [ "$client_in_yaml" = false ]; then
+    CLIENTS_TO_REMOVE+=("$existing")
+  fi
+done
+
+# Remove clients that are no longer in YAML
+if [ ${#CLIENTS_TO_REMOVE[@]} -gt 0 ]; then
+  echo "Removing ${#CLIENTS_TO_REMOVE[@]} clients that are no longer in YAML..."
+
+  # Create a temporary file for the new config
+  TEMP_SERVER_CONFIG=$(mktemp)
+
+  # Process the server config line by line
+  in_peer_to_remove=false
+  client_name_to_remove=""
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    # Check if we've hit a new peer section
+    if [[ "$line" == "[Peer]" ]]; then
+      # Write the current line to the temp file
+      echo "$line" >> "$TEMP_SERVER_CONFIG"
+
+      # Next line should be a comment with the client name
+      # Get the next line to check if this is a peer to remove
+      read -r next_line
+
+      if [[ "$next_line" =~ ^#\ (.+)$ ]]; then
+        client_name="${BASH_REMATCH[1]}"
+
+        # Check if this client should be removed
+        for remove_name in "${CLIENTS_TO_REMOVE[@]}"; do
+          if [ "$client_name" = "$remove_name" ]; then
+            in_peer_to_remove=true
+            client_name_to_remove="$client_name"
+            echo "Found client to remove: $client_name"
+            break
+          fi
+        done
+
+        # If not a client to remove, write the line to the temp file
+        if [ "$in_peer_to_remove" = false ]; then
+          echo "$next_line" >> "$TEMP_SERVER_CONFIG"
+        fi
+      else
+        # No client name found, just write the line
+        echo "$next_line" >> "$TEMP_SERVER_CONFIG"
+      fi
+    elif [ "$in_peer_to_remove" = true ]; then
+      # We're in a peer section that should be removed
+      # Skip this line if it's part of the current peer
+      if [[ "$line" == "" ]] || [[ "$line" == "[Interface]" ]] || [[ "$line" == "[Peer]" ]]; then
+        # Empty line or new section means we're done with this peer
+        in_peer_to_remove=false
+        echo "Removed client: $client_name_to_remove"
+
+        # Write the line if it's a new section
+        if [[ "$line" == "[Interface]" ]] || [[ "$line" == "[Peer]" ]]; then
+          echo "$line" >> "$TEMP_SERVER_CONFIG"
+        elif [[ "$line" == "" ]]; then
+          # Only add one blank line
+          echo "" >> "$TEMP_SERVER_CONFIG"
+        fi
+      fi
+      # Otherwise, skip the line (part of the peer to remove)
+    else
+      # Write all other lines unchanged
+      echo "$line" >> "$TEMP_SERVER_CONFIG"
+    fi
+  done < "$SERVER_CONFIG"
+
+  # Replace the original file with our updated version
+  mv "$TEMP_SERVER_CONFIG" "$SERVER_CONFIG"
+  chmod 600 "$SERVER_CONFIG"
+
+  # Clean up client configuration files
+  for client_name in "${CLIENTS_TO_REMOVE[@]}"; do
+    client_conf="${CLIENT_OUTPUT_DIR}/${client_name}.conf"
+    client_png="${CLIENT_OUTPUT_DIR}/${client_name}.png"
+
+    # Remove client configuration if it exists
+    if [ -f "$client_conf" ]; then
+      rm -f "$client_conf"
+      echo "Removed client config file: $client_conf"
+    fi
+
+    # Remove QR code image if it exists
+    if [ -f "$client_png" ]; then
+      rm -f "$client_png"
+      echo "Removed client QR code: $client_png"
+    fi
+  done
+
+  # Flag that we need to restart the service
+  CLIENTS_REMOVED=true
+  echo "Removed ${#CLIENTS_TO_REMOVE[@]} clients: ${CLIENTS_TO_REMOVE[*]}"
+else
+  echo "No clients need to be removed."
+  CLIENTS_REMOVED=false
+fi
 
 # Process each client from YAML
 CLIENT_COUNT=$(yq '.clients | length' "$CONFIG_FILE")
@@ -404,7 +522,7 @@ if [ "$YAML_MODIFIED" = true ]; then
 fi
 
 # Only restart services if we made changes
-if [ "$SERVER_EXISTS" = false ] || [ "$ADDED_NEW_CLIENTS" = true ]; then
+if [ "$SERVER_EXISTS" = false ] || [ "$ADDED_NEW_CLIENTS" = true ] || [ "$CLIENTS_REMOVED" = true ]; then
   # Enable IP forwarding
   echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/99-wireguard.conf
   echo "net.ipv6.conf.all.forwarding = 1" >> /etc/sysctl.d/99-wireguard.conf
@@ -425,8 +543,8 @@ else
   echo "No changes made to WireGuard configuration."
 fi
 
-if [ "$ADDED_NEW_CLIENTS" = false ]; then
-  echo "No new clients added."
+if [ "$ADDED_NEW_CLIENTS" = false ] && [ "$CLIENTS_REMOVED" = false ]; then
+  echo "No clients added or removed."
 fi
 
 echo "WireGuard setup complete using host interface: $SERVER_HOST_INTERFACE with endpoint: $SERVER_ENDPOINT:$SERVER_PORT"
