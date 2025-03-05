@@ -272,7 +272,6 @@ CLIENT_COUNT=$(yq '.clients | length' "$CONFIG_FILE")
 ADDED_NEW_CLIENTS=false
 UPDATED_CLIENTS=()
 UPDATED_IPS=()
-UPDATED_CLIENT_NAMES=()
 
 for (( i=0; i<$CLIENT_COUNT; i++ )); do
   CLIENT_NAME=$(yq ".clients[$i].name" "$CONFIG_FILE")
@@ -321,7 +320,6 @@ $NEW_IP"
     # Track for YAML update
     UPDATED_CLIENTS+=($i)
     UPDATED_IPS+=("$CLIENT_IP")
-    UPDATED_CLIENT_NAMES+=("$CLIENT_NAME")
     YAML_MODIFIED=true
   fi
 
@@ -393,63 +391,16 @@ if [ "$YAML_MODIFIED" = true ]; then
   # Create a backup of the original YAML
   cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
 
-  # For each client that needs updating, use yq directly to update the IP
+  # Update each client that got an auto-assigned IP
   for (( i=0; i<${#UPDATED_CLIENTS[@]}; i++ )); do
     client_index=${UPDATED_CLIENTS[$i]}
     client_ip=${UPDATED_IPS[$i]}
-    client_name=${UPDATED_CLIENT_NAMES[$i]}
 
-    echo "Updating client '$client_name' with IP: $client_ip"
-
-    # Use a simple sed approach to update the YAML file
-    # This preserves formatting better than yq for complex files
-    awk -v name="$client_name" -v ip="$client_ip" '
-    BEGIN { in_client = 0; found = 0; }
-
-    # When we find a client name line, check if it matches our target
-    /^ *- *name:/ {
-      if ($0 ~ name) {
-        in_client = 1;
-        found = 1;
-      } else {
-        in_client = 0;
-      }
-    }
-
-    # If we are in the target client section and find the internal_ip line, replace it
-    /^ *internal_ip:/ {
-      if (in_client) {
-        # Extract and maintain the indentation
-        match($0, /^ */);
-        indent = substr($0, RSTART, RLENGTH);
-        print indent "internal_ip: " ip;
-        next;
-      }
-    }
-
-    # Print all other lines unchanged
-    { print; }
-
-    END {
-      if (!found) {
-        print "Error: Could not find client " name " in YAML file" > "/dev/stderr";
-        exit 1;
-      }
-    }' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp"
-
-    # Check if awk completed successfully
-    if [ $? -eq 0 ]; then
-      mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
-    else
-      echo "Error updating YAML for client '$client_name'. Changes not applied."
-      rm -f "${CONFIG_FILE}.tmp"
-      exit 1
-    fi
+    # Use yq to update the YAML file
+    yq -i ".clients[$client_index].internal_ip = \"$client_ip\"" "$CONFIG_FILE"
   done
 
-  echo "YAML file updated with preserved formatting."
-else
-  echo "No changes to YAML file needed."
+  echo "YAML file updated."
 fi
 
 # Only restart services if we made changes
