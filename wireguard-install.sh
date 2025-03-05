@@ -28,6 +28,7 @@ CLIENT_OUTPUT_DIR="wireguard-configs"
 SERVER_CONFIG="/etc/wireguard/wg0.conf"
 KEYS_DIR="${CLIENT_OUTPUT_DIR}/keys"
 DEFAULT_MTU=1420
+DEFAULT_PORT=51820
 
 # Function to get IP address of an interface
 get_interface_ip() {
@@ -93,6 +94,12 @@ SERVER_HOST_INTERFACE=$(yq '.server.host_interface' "$CONFIG_FILE")
 SERVER_MTU=$(yq '.server.mtu' "$CONFIG_FILE")
 SERVER_POST_UP=$(yq '.server.post_up' "$CONFIG_FILE")
 SERVER_POST_DOWN=$(yq '.server.post_down' "$CONFIG_FILE")
+
+# Set default port if not specified
+if [ "$SERVER_PORT" == "null" ] || [ -z "$SERVER_PORT" ]; then
+  SERVER_PORT=$DEFAULT_PORT
+  echo "No port specified, using default: $SERVER_PORT"
+fi
 
 # Determine the host interface to use
 if [ "$SERVER_HOST_INTERFACE" == "null" ] || [ -z "$SERVER_HOST_INTERFACE" ]; then
@@ -303,4 +310,4 @@ if [ "$ADDED_NEW_CLIENTS" = false ]; then
   echo "No new clients added."
 fi
 
-echo "WireGuard setup complete using host interface: $SERVER_HOST_INTERFACE with endpoint: $SERVER_ENDPOINT"
+echo "WireGuard setup complete using host interface: $SERVER_HOST_INTERFACE with endpoint: $SERVER_ENDPOINT:$SERVER_PORT"
