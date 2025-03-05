@@ -1,238 +1,188 @@
 #!/bin/bash
 
-# Detect Debian users running the script with "sh" instead of bash
-if readlink /proc/$$/exe | grep -q "dash"; then
-	echo 'This installer needs to be run with "bash", not "sh".'
-	exit
+# Check if running as root
+if [ "$(id -u)" -ne 0 ]; then
+   echo "This script must be run as root"
+   exit 1
 fi
 
-# Discard stdin. Needed when running from an one-liner which includes a newline
-read -N 999999 -t 0.001
-
-# Detect OS
-# $os_version variables aren't always in use, but are kept here for convenience
-if grep -qs "ubuntu" /etc/os-release; then
-	os="ubuntu"
-	os_version=$(grep 'VERSION_ID' /etc/os-release | cut -d '"' -f 2 | tr -d '.')
-elif [[ -e /etc/debian_version ]]; then
-	os="debian"
-	os_version=$(grep -oE '[0-9]+' /etc/debian_version | head -1)
-elif [[ -e /etc/almalinux-release || -e /etc/rocky-release || -e /etc/centos-release ]]; then
-	os="centos"
-	os_version=$(grep -shoE '[0-9]+' /etc/almalinux-release /etc/rocky-release /etc/centos-release | head -1)
-elif [[ -e /etc/fedora-release ]]; then
-	os="fedora"
-	os_version=$(grep -oE '[0-9]+' /etc/fedora-release | head -1)
-else
-	echo "This installer seems to be running on an unsupported distribution.
-Supported distros are Ubuntu, Debian, AlmaLinux, Rocky Linux, CentOS and Fedora."
-	exit
-fi
-
-if [[ "$os" == "ubuntu" && "$os_version" -lt 2204 ]]; then
-	echo "Ubuntu 22.04 or higher is required to use this installer.
-This version of Ubuntu is too old and unsupported."
-	exit
-fi
-
-if [[ "$os" == "debian" ]]; then
-	if grep -q '/sid' /etc/debian_version; then
-		echo "Debian Testing and Debian Unstable are unsupported by this installer."
-		exit
-	fi
-	if [[ "$os_version" -lt 11 ]]; then
-		echo "Debian 11 or higher is required to use this installer.
-This version of Debian is too old and unsupported."
-		exit
-	fi
-fi
-
-if [[ "$os" == "centos" && "$os_version" -lt 9 ]]; then
-	os_name=$(sed 's/ release.*//' /etc/almalinux-release /etc/rocky-release /etc/centos-release 2>/dev/null | head -1)
-	echo "$os_name 9 or higher is required to use this installer.
-This version of $os_name is too old and unsupported."
-	exit
-fi
-
-# Detect environments where $PATH does not include the sbin directories
-if ! grep -q sbin <<< "$PATH"; then
-	echo '$PATH does not include sbin. Try using "su -" instead of "su".'
-	exit
-fi
-
-# Detect if BoringTun (userspace WireGuard) needs to be used
-if ! systemd-detect-virt -cq; then
-	# Not running inside a container
-	use_boringtun="0"
-elif grep -q '^wireguard ' /proc/modules; then
-	# Running inside a container, but the wireguard kernel module is available
-	use_boringtun="0"
-else
-	# Running inside a container and the wireguard kernel module is not available
-	use_boringtun="1"
-fi
-
-if [[ "$EUID" -ne 0 ]]; then
-	echo "This installer needs to be run with superuser privileges."
-	exit
-fi
-
-# Install WireGuard
-# If BoringTun is not required, set up with the WireGuard kernel module
-if [[ "$use_boringtun" -eq 0 ]]; then
-	if [[ "$os" == "ubuntu" ]]; then
-		# Ubuntu
-		apt-get update
-		apt-get install -y wireguard qrencode $firewall
-	elif [[ "$os" == "debian" ]]; then
-		# Debian
-		apt-get update
-		apt-get install -y wireguard qrencode $firewall
-	elif [[ "$os" == "centos" ]]; then
-		# CentOS
-		dnf install -y epel-release
-		dnf install -y wireguard-tools qrencode $firewall
-	elif [[ "$os" == "fedora" ]]; then
-		# Fedora
-		dnf install -y wireguard-tools qrencode $firewall
-		mkdir -p /etc/wireguard/
-	fi
-# Else, BoringTun needs to be used
-else
-	# Install required packages
-	if [[ "$os" == "ubuntu" ]]; then
-		# Ubuntu
-		apt-get update
-		apt-get install -y qrencode ca-certificates $cron $firewall
-		apt-get install -y wireguard-tools --no-install-recommends
-	elif [[ "$os" == "debian" ]]; then
-		# Debian
-		apt-get update
-		apt-get install -y qrencode ca-certificates $cron $firewall
-		apt-get install -y wireguard-tools --no-install-recommends
-	elif [[ "$os" == "centos" ]]; then
-		# CentOS
-		dnf install -y epel-release
-		dnf install -y wireguard-tools qrencode ca-certificates tar $cron $firewall
-	elif [[ "$os" == "fedora" ]]; then
-		# Fedora
-		dnf install -y wireguard-tools qrencode ca-certificates tar $cron $firewall
-		mkdir -p /etc/wireguard/
-	fi
-fi
-
-# Ensure yq is installed
-install_yq() {
-    if ! command -v yq &> /dev/null; then
-        echo "yq not found. Installing..."
-        if [[ "$os" == "ubuntu" || "$os" == "debian" ]]; then
-            wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq
-            chmod +x /usr/bin/yq
-        elif [[ "$os" == "centos" || "$os" == "fedora" ]]; then
-            dnf install -y yq
-        else
-            echo "Unsupported OS for automatic yq installation"
-            exit 1
-        fi
-    fi
-}
-
-# Default config file locations (in order of precedence)
-CONFIG_LOCATIONS=(
-    "./wireguard.yaml"
-    "/etc/wireguard/config.yaml"
-    "$HOME/.config/wireguard/config.yaml"
-    "/usr/local/etc/wireguard/config.yaml"
-)
-
-find_config_file() {
-    for config in "${CONFIG_LOCATIONS[@]}"; do
-        if [[ -f "$config" ]]; then
-            echo "$config"
-            return 0
-        fi
-    done
-
-    echo "No configuration file found. Checked locations:"
-    printf '%s\n' "${CONFIG_LOCATIONS[@]}"
+# Check dependencies
+for cmd in wg yq; do
+  if ! command -v $cmd &> /dev/null; then
+    echo "Error: $cmd is required but not installed."
     exit 1
+  fi
+done
+
+# Check for qrencode specifically
+if ! command -v qrencode &> /dev/null; then
+  echo "Error: qrencode is required but not installed."
+  echo "Please install it with your package manager, e.g.:"
+  echo "  apt install qrencode  # Debian/Ubuntu"
+  echo "  yum install qrencode  # CentOS/RHEL"
+  exit 1
+fi
+
+CONFIG_FILE="wireguard.yaml"
+CLIENT_OUTPUT_DIR="wireguard-configs"
+SERVER_CONFIG="/etc/wireguard/wg0.conf"
+KEYS_DIR="${CLIENT_OUTPUT_DIR}/keys"
+DEFAULT_MTU=1420
+
+# Check if config file exists
+if [ ! -f "$CONFIG_FILE" ]; then
+  echo "Error: Config file $CONFIG_FILE not found."
+  exit 1
+fi
+
+# Create output directories
+mkdir -p "$CLIENT_OUTPUT_DIR"
+mkdir -p "$KEYS_DIR"
+mkdir -p "/etc/wireguard"
+
+# Function to generate key pair if it doesn't exist
+generate_keys() {
+  local name=$1
+  local private_key_file="${KEYS_DIR}/${name}.private"
+  local public_key_file="${KEYS_DIR}/${name}.public"
+
+  if [ ! -f "$private_key_file" ]; then
+    wg genkey | tee "$private_key_file" | wg pubkey > "$public_key_file"
+    chmod 600 "$private_key_file"
+  fi
 }
 
-# Parse config from YAML
-parse_config() {
-    local config_file="$1"
+# Generate server keys
+generate_keys "server"
+SERVER_PRIVATE_KEY=$(cat "${KEYS_DIR}/server.private")
+SERVER_PUBLIC_KEY=$(cat "${KEYS_DIR}/server.public")
 
-    # Validate config file exists
-    if [[ ! -f "$config_file" ]]; then
-        echo "Config file not found: $config_file"
-        exit 1
-    fi
+# Extract server details from YAML
+SERVER_ENDPOINT=$(yq '.server.endpoint' "$CONFIG_FILE")
+SERVER_PORT=$(yq '.server.port' "$CONFIG_FILE")
+SERVER_INTERNAL_IP=$(yq '.server.internal_ip' "$CONFIG_FILE")
+SERVER_INTERFACE=$(yq '.server.interface_name' "$CONFIG_FILE" || echo "wg0")
+SERVER_MTU=$(yq '.server.mtu' "$CONFIG_FILE")
+SERVER_POST_UP=$(yq '.server.post_up' "$CONFIG_FILE")
+SERVER_POST_DOWN=$(yq '.server.post_down' "$CONFIG_FILE")
 
-    # Extract configuration values
-    SERVER_IPV4=$(yq '.server.ipv4' "$config_file")
-    SERVER_PORT=$(yq '.server.port' "$config_file")
-    CLIENT_NAME=$(yq '.client.name' "$config_file")
-    DNS_SERVER=$(yq '.client.dns' "$config_file")
-
-    # Validate extracted values
-    [[ -z "$SERVER_IPV4" ]] && { echo "No IPv4 address specified in config"; exit 1; }
-    [[ -z "$SERVER_PORT" ]] && SERVER_PORT="51820"
-    [[ -z "$CLIENT_NAME" ]] && CLIENT_NAME="client"
-    [[ -z "$DNS_SERVER" ]] && DNS_SERVER="1"
-}
-
-new_client_setup() {
-    # Find lowest available octet
-    octet=2
-    while grep AllowedIPs /etc/wireguard/wg0.conf | cut -d "." -f 4 | cut -d "/" -f 1 | grep -q "^$octet$"; do
-        (( octet++ ))
-    done
-
-    # Check if subnet is full
-    if [[ "$octet" -eq 255 ]]; then
-        echo "253 clients are already configured. The WireGuard internal subnet is full!"
-        exit 1
-    fi
-
-    # Generate keys
-    key=$(wg genkey)
-    psk=$(wg genpsk)
-    public_key=$(wg pubkey <<< "$key")
-
-    # Append to server configuration
-    cat << EOF >> /etc/wireguard/wg0.conf
-# BEGIN_PEER $client
-[Peer]
-PublicKey = $public_key
-PresharedKey = $psk
-AllowedIPs = 10.7.0.$octet/32
-# END_PEER $client
-EOF
-
-    # Create client configuration
-    cat << EOF > ~/"$client".conf
+# Create server config
+cat > "$SERVER_CONFIG" << EOF
 [Interface]
-Address = 10.7.0.$octet/24
-DNS = $DNS_SERVER
-PrivateKey = $key
-
-[Peer]
-PublicKey = $(grep PrivateKey /etc/wireguard/wg0.conf | cut -d " " -f 3 | wg pubkey)
-PresharedKey = $psk
-AllowedIPs = 0.0.0.0/0
-Endpoint = $SERVER_IPV4:$SERVER_PORT
-PersistentKeepalive = 25
+PrivateKey = $SERVER_PRIVATE_KEY
+Address = $SERVER_INTERNAL_IP
+ListenPort = $SERVER_PORT
 EOF
 
-    # Add to live WireGuard interface
-    wg addconf wg0 <(sed -n "/^# BEGIN_PEER $client/,/^# END_PEER $client/p" /etc/wireguard/wg0.conf)
+# Add optional server parameters
+if [ "$SERVER_MTU" != "null" ]; then
+  echo "MTU = $SERVER_MTU" >> "$SERVER_CONFIG"
+else
+  echo "MTU = $DEFAULT_MTU" >> "$SERVER_CONFIG"
+fi
 
-    # Print client details
-    echo "New WireGuard Client Created:"
-    echo "- Name: $client"
-    echo "- Internal IP: 10.7.0.$octet"
-    echo "- Configuration file: ~/$client.conf"
+if [ "$SERVER_POST_UP" != "null" ]; then
+  echo "PostUp = $SERVER_POST_UP" >> "$SERVER_CONFIG"
+else
+  # Add default PostUp rules if none specified
+  echo "PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o $(ip route | grep default | awk '{print $5}') -j MASQUERADE; ip6tables -A FORWARD -i %i -j ACCEPT; ip6tables -t nat -A POSTROUTING -o $(ip route | grep default | awk '{print $5}') -j MASQUERADE" >> "$SERVER_CONFIG"
+fi
 
-    # Generate QR code
-    qrencode -t ANSI256UTF8 < ~/"$client".conf
-}
+if [ "$SERVER_POST_DOWN" != "null" ]; then
+  echo "PostDown = $SERVER_POST_DOWN" >> "$SERVER_CONFIG"
+else
+  # Add default PostDown rules if none specified
+  echo "PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o $(ip route | grep default | awk '{print $5}') -j MASQUERADE; ip6tables -D FORWARD -i %i -j ACCEPT; ip6tables -t nat -D POSTROUTING -o $(ip route | grep default | awk '{print $5}') -j MASQUERADE" >> "$SERVER_CONFIG"
+fi
+
+# Set secure permissions on server config
+chmod 600 "$SERVER_CONFIG"
+
+# Process each client
+CLIENT_COUNT=$(yq '.clients | length' "$CONFIG_FILE")
+
+for (( i=0; i<$CLIENT_COUNT; i++ )); do
+  CLIENT_NAME=$(yq ".clients[$i].name" "$CONFIG_FILE")
+  CLIENT_IP=$(yq ".clients[$i].internal_ip" "$CONFIG_FILE")
+  CLIENT_DNS=$(yq ".clients[$i].dns" "$CONFIG_FILE")
+  CLIENT_ALLOWED_IPS=$(yq ".clients[$i].allowed_ips" "$CONFIG_FILE")
+  CLIENT_KEEPALIVE=$(yq ".clients[$i].persistent_keepalive" "$CONFIG_FILE")
+  CLIENT_MTU=$(yq ".clients[$i].mtu" "$CONFIG_FILE")
+
+  # Generate client keys
+  generate_keys "$CLIENT_NAME"
+  CLIENT_PRIVATE_KEY=$(cat "${KEYS_DIR}/${CLIENT_NAME}.private")
+  CLIENT_PUBLIC_KEY=$(cat "${KEYS_DIR}/${CLIENT_NAME}.public")
+
+  # Add client to server config
+  cat >> "$SERVER_CONFIG" << EOF
+
+[Peer]
+# $CLIENT_NAME
+PublicKey = $CLIENT_PUBLIC_KEY
+AllowedIPs = $CLIENT_IP
+EOF
+
+  # Create client config
+  CLIENT_CONFIG="${CLIENT_OUTPUT_DIR}/${CLIENT_NAME}.conf"
+  cat > "$CLIENT_CONFIG" << EOF
+[Interface]
+PrivateKey = $CLIENT_PRIVATE_KEY
+Address = $CLIENT_IP
+EOF
+
+  # Add MTU to client config (default 1420 if not specified)
+  if [ "$CLIENT_MTU" != "null" ]; then
+    echo "MTU = $CLIENT_MTU" >> "$CLIENT_CONFIG"
+  else
+    echo "MTU = $DEFAULT_MTU" >> "$CLIENT_CONFIG"
+  fi
+
+  # Add DNS if specified
+  if [ "$CLIENT_DNS" != "null" ]; then
+    echo "DNS = $CLIENT_DNS" >> "$CLIENT_CONFIG"
+  fi
+
+  # Add server as peer in client config
+  cat >> "$CLIENT_CONFIG" << EOF
+
+[Peer]
+PublicKey = $SERVER_PUBLIC_KEY
+Endpoint = ${SERVER_ENDPOINT}:${SERVER_PORT}
+AllowedIPs = $CLIENT_ALLOWED_IPS
+EOF
+
+  # Add persistent keepalive if specified
+  if [ "$CLIENT_KEEPALIVE" != "null" ]; then
+    echo "PersistentKeepalive = $CLIENT_KEEPALIVE" >> "$CLIENT_CONFIG"
+  fi
+
+  # Generate and display QR code for this client
+  echo "==============================================="
+  echo "QR Code for client: $CLIENT_NAME"
+  echo "==============================================="
+  qrencode -t ansiutf8 < "${CLIENT_CONFIG}"
+  echo "==============================================="
+
+  # Also save QR code as image file
+  qrencode -t png -o "${CLIENT_OUTPUT_DIR}/${CLIENT_NAME}.png" < "${CLIENT_CONFIG}"
+  echo "QR code image saved as: ${CLIENT_OUTPUT_DIR}/${CLIENT_NAME}.png"
+  echo ""
+done
+
+# Enable IP forwarding
+echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/99-wireguard.conf
+echo "net.ipv6.conf.all.forwarding = 1" >> /etc/sysctl.d/99-wireguard.conf
+sysctl -p /etc/sysctl.d/99-wireguard.conf >/dev/null 2>&1
+
+# Setup WireGuard service
+systemctl enable wg-quick@wg0 >/dev/null 2>&1
+systemctl restart wg-quick@wg0 >/dev/null 2>&1
+
+# Open firewall port if ufw is installed
+if command -v ufw &> /dev/null && ufw status | grep -q "active"; then
+  ufw allow $SERVER_PORT/udp >/dev/null 2>&1
+  ufw reload >/dev/null 2>&1
+fi
+
+echo "WireGuard setup complete!"
