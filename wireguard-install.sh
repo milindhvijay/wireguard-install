@@ -26,7 +26,7 @@ if ! command -v yq &> /dev/null; then
 fi
 
 # Default config file location
-CONFIG_FILE="wireguard.yaml"
+CONFIG_FILE="wireguard-config.yaml"
 
 # Check if config file exists
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -36,8 +36,8 @@ fi
 
 # Detect Debian users running the script with "sh" instead of bash
 if readlink /proc/$$/exe | grep -q "dash"; then
-	echo 'This installer needs to be run with "bash", not "sh".'
-	exit
+    echo 'This installer needs to be run with "bash", not "sh".'
+    exit
 fi
 
 # Discard stdin. Needed when running from an one-liner which includes a newline
@@ -46,84 +46,84 @@ read -N 999999 -t 0.001
 # Detect OS
 # $os_version variables aren't always in use, but are kept here for convenience
 if grep -qs "ubuntu" /etc/os-release; then
-	os="ubuntu"
-	os_version=$(grep 'VERSION_ID' /etc/os-release | cut -d '"' -f 2 | tr -d '.')
+    os="ubuntu"
+    os_version=$(grep 'VERSION_ID' /etc/os-release | cut -d '"' -f 2 | tr -d '.')
 elif [[ -e /etc/debian_version ]]; then
-	os="debian"
-	os_version=$(grep -oE '[0-9]+' /etc/debian_version | head -1)
+    os="debian"
+    os_version=$(grep -oE '[0-9]+' /etc/debian_version | head -1)
 elif [[ -e /etc/almalinux-release || -e /etc/rocky-release || -e /etc/centos-release ]]; then
-	os="centos"
-	os_version=$(grep -shoE '[0-9]+' /etc/almalinux-release /etc/rocky-release /etc/centos-release | head -1)
+    os="centos"
+    os_version=$(grep -shoE '[0-9]+' /etc/almalinux-release /etc/rocky-release /etc/centos-release | head -1)
 elif [[ -e /etc/fedora-release ]]; then
-	os="fedora"
-	os_version=$(grep -oE '[0-9]+' /etc/fedora-release | head -1)
+    os="fedora"
+    os_version=$(grep -oE '[0-9]+' /etc/fedora-release | head -1)
 else
-	echo "This installer seems to be running on an unsupported distribution.
+    echo "This installer seems to be running on an unsupported distribution.
 Supported distros are Ubuntu, Debian, AlmaLinux, Rocky Linux, CentOS and Fedora."
-	exit
+    exit
 fi
 
 if [[ "$os" == "ubuntu" && "$os_version" -lt 2204 ]]; then
-	echo "Ubuntu 22.04 or higher is required to use this installer.
+    echo "Ubuntu 22.04 or higher is required to use this installer.
 This version of Ubuntu is too old and unsupported."
-	exit
+    exit
 fi
 
 if [[ "$os" == "debian" ]]; then
-	if grep -q '/sid' /etc/debian_version; then
-		echo "Debian Testing and Debian Unstable are unsupported by this installer."
-		exit
-	fi
-	if [[ "$os_version" -lt 11 ]]; then
-		echo "Debian 11 or higher is required to use this installer.
+    if grep -q '/sid' /etc/debian_version; then
+        echo "Debian Testing and Debian Unstable are unsupported by this installer."
+        exit
+    fi
+    if [[ "$os_version" -lt 11 ]]; then
+        echo "Debian 11 or higher is required to use this installer.
 This version of Debian is too old and unsupported."
-		exit
-	fi
+        exit
+    fi
 fi
 
 if [[ "$os" == "centos" && "$os_version" -lt 9 ]]; then
-	os_name=$(sed 's/ release.*//' /etc/almalinux-release /etc/rocky-release /etc/centos-release 2>/dev/null | head -1)
-	echo "$os_name 9 or higher is required to use this installer.
+    os_name=$(sed 's/ release.*//' /etc/almalinux-release /etc/rocky-release /etc/centos-release 2>/dev/null | head -1)
+    echo "$os_name 9 or higher is required to use this installer.
 This version of $os_name is too old and unsupported."
-	exit
+    exit
 fi
 
 # Detect environments where $PATH does not include the sbin directories
 if ! grep -q sbin <<< "$PATH"; then
-	echo '$PATH does not include sbin. Try using "su -" instead of "su".'
-	exit
+    echo '$PATH does not include sbin. Try using "su -" instead of "su".'
+    exit
 fi
 
 # Detect if BoringTun (userspace WireGuard) needs to be used
 if ! systemd-detect-virt -cq; then
-	# Not running inside a container
-	use_boringtun="0"
+    # Not running inside a container
+    use_boringtun="0"
 elif grep -q '^wireguard ' /proc/modules; then
-	# Running inside a container, but the wireguard kernel module is available
-	use_boringtun="0"
+    # Running inside a container, but the wireguard kernel module is available
+    use_boringtun="0"
 else
-	# Running inside a container and the wireguard kernel module is not available
-	use_boringtun="1"
+    # Running inside a container and the wireguard kernel module is not available
+    use_boringtun="1"
 fi
 
 if [[ "$EUID" -ne 0 ]]; then
-	echo "This installer needs to be run with superuser privileges."
-	exit
+    echo "This installer needs to be run with superuser privileges."
+    exit
 fi
 
 if [[ "$use_boringtun" -eq 1 ]]; then
-	if [ "$(uname -m)" != "x86_64" ]; then
-		echo "In containerized systems without the wireguard kernel module, this installer
+    if [ "$(uname -m)" != "x86_64" ]; then
+        echo "In containerized systems without the wireguard kernel module, this installer
 supports only the x86_64 architecture.
 The system runs on $(uname -m) and is unsupported."
-		exit
-	fi
-	# TUN device is required to use BoringTun
-	if [[ ! -e /dev/net/tun ]] || ! ( exec 7<>/dev/net/tun ) 2>/dev/null; then
-		echo "The system does not have the TUN device available.
+        exit
+    fi
+    # TUN device is required to use BoringTun
+    if [[ ! -e /dev/net/tun ]] || ! ( exec 7<>/dev/net/tun ) 2>/dev/null; then
+        echo "The system does not have the TUN device available.
 TUN needs to be enabled before running this installer."
-		exit
-	fi
+        exit
+    fi
 fi
 
 # Read configuration from YAML file
@@ -224,53 +224,57 @@ Environment=WG_SUDO=1" > /etc/systemd/system/wg-quick@wg0.service.d/boringtun.co
         fi
     fi
 
-    # Configure server IP addresses
+    # Parse IP addresses from configuration
     local server_ip
     local server_ip6
+    local ipv4_subnet="24"  # Default subnet
+    local ipv6_config=""
 
-    if [[ "$ipv4_enabled" == "true" && -n "$ipv4_address" ]]; then
+    if [[ "$ipv4_enabled" == "true" && -n "$ipv4_address" && "$ipv4_address" != "null" ]]; then
         server_ip=$(echo "$ipv4_address" | cut -d '/' -f 1)
         ipv4_subnet=$(echo "$ipv4_address" | cut -d '/' -f 2)
     else
-        # Auto-detect IPv4 address
-        if [[ -n "$host_interface" && "$host_interface" != "null" ]]; then
-            server_ip=$(ip -4 addr show "$host_interface" | grep -oP '(?<=inet\s)[0-9.]+')
-        elif [[ $(ip -4 addr | grep inet | grep -vEc '127(\.[0-9]{1,3}){3}') -eq 1 ]]; then
-            server_ip=$(ip -4 addr | grep inet | grep -vE '127(\.[0-9]{1,3}){3}' | cut -d '/' -f 1 | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}')
-        else
-            echo "Multiple IPv4 addresses detected, but none specified in config. Please specify server.ipv4.address in the config."
-            exit 1
-        fi
+        # Use the standard subnet from original script
         server_ip="10.7.0.1"
-        ipv4_subnet="24"
     fi
 
-    if [[ "$ipv6_enabled" == "true" && -n "$ipv6_address" ]]; then
+    if [[ "$ipv6_enabled" == "true" && -n "$ipv6_address" && "$ipv6_address" != "null" ]]; then
         server_ip6=$(echo "$ipv6_address" | cut -d '/' -f 1)
         ipv6_subnet=$(echo "$ipv6_address" | cut -d '/' -f 2)
         ipv6_config=", ${server_ip6}/${ipv6_subnet}"
-    else
-        ipv6_config=""
     fi
 
-    # Generate wg0.conf
-    local server_private_key=$(wg genkey)
-    local server_public_key=$(echo "$server_private_key" | wg pubkey)
-
-    # Determine endpoint IP
+    # Get the server's public IP if needed
     local endpoint_ip
-    if [[ -n "$public_endpoint" ]]; then
+    if [[ -n "$public_endpoint" && "$public_endpoint" != "null" ]]; then
         endpoint_ip="$public_endpoint"
     else
-        endpoint_ip="$server_ip"
-        # If server IP is private, try to get public IP
-        if echo "$server_ip" | grep -qE '^(10\.|172\.1[6789]\.|172\.2[0-9]\.|172\.3[01]\.|192\.168)'; then
+        # Get interface IP first
+        if [[ -n "$host_interface" && "$host_interface" != "null" ]]; then
+            ip=$(ip -4 addr show "$host_interface" | grep -oP '(?<=inet\s)[0-9.]+')
+        elif [[ $(ip -4 addr | grep inet | grep -vEc '127(\.[0-9]{1,3}){3}') -eq 1 ]]; then
+            ip=$(ip -4 addr | grep inet | grep -vE '127(\.[0-9]{1,3}){3}' | cut -d '/' -f 1 | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}')
+        else
+            # Just use the first non-localhost interface
+            ip=$(ip -4 addr | grep inet | grep -vE '127(\.[0-9]{1,3}){3}' | cut -d '/' -f 1 | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}' | head -1)
+        fi
+
+        # If IP is private, try to get public IP
+        if echo "$ip" | grep -qE '^(10\.|172\.1[6789]\.|172\.2[0-9]\.|172\.3[01]\.|192\.168)'; then
             get_public_ip=$(grep -m 1 -oE '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' <<< "$(wget -T 10 -t 1 -4qO- "http://ip1.dynupdate.no-ip.com/" || curl -m 10 -4Ls "http://ip1.dynupdate.no-ip.com/")")
             if [[ -n "$get_public_ip" ]]; then
                 endpoint_ip="$get_public_ip"
+            else
+                endpoint_ip="$ip"
             fi
+        else
+            endpoint_ip="$ip"
         fi
     fi
+
+    # Generate server keys
+    local server_private_key=$(wg genkey)
+    local server_public_key=$(echo "$server_private_key" | wg pubkey)
 
     # Create server config
     cat << EOF > /etc/wireguard/wg0.conf
@@ -282,7 +286,7 @@ Environment=WG_SUDO=1" > /etc/systemd/system/wg-quick@wg0.service.d/boringtun.co
 Address = ${server_ip}/${ipv4_subnet}${ipv6_config}
 PrivateKey = ${server_private_key}
 ListenPort = ${port}
-MTU = ${server_mtu}
+$([ -n "$server_mtu" ] && echo "MTU = ${server_mtu}")
 
 EOF
 
@@ -297,27 +301,36 @@ EOF
         echo 1 > /proc/sys/net/ipv6/conf/all/forwarding
     fi
 
+    # Get the base network for firewall rules
+    local vpn_network=$(echo "$server_ip" | cut -d'.' -f1-3)".0/24"
+
     # Configure firewall rules
     if systemctl is-active --quiet firewalld.service; then
         # Using firewalld
         firewall-cmd --add-port="$port"/udp
-        firewall-cmd --zone=trusted --add-source=10.7.0.0/24
+        firewall-cmd --zone=trusted --add-source="$vpn_network"
         firewall-cmd --permanent --add-port="$port"/udp
-        firewall-cmd --permanent --zone=trusted --add-source=10.7.0.0/24
-
-        # Extract base IPv4 address
-        local base_ip=$(echo "$server_ip" | cut -d'.' -f1-3)
+        firewall-cmd --permanent --zone=trusted --add-source="$vpn_network"
 
         # Set NAT for the VPN subnet
-        firewall-cmd --direct --add-rule ipv4 nat POSTROUTING 0 -s ${base_ip}.0/24 ! -d ${base_ip}.0/24 -j SNAT --to "$server_ip"
-        firewall-cmd --permanent --direct --add-rule ipv4 nat POSTROUTING 0 -s ${base_ip}.0/24 ! -d ${base_ip}.0/24 -j SNAT --to "$server_ip"
+        firewall-cmd --direct --add-rule ipv4 nat POSTROUTING 0 -s "$vpn_network" ! -d "$vpn_network" -j SNAT --to "$ip"
+        firewall-cmd --permanent --direct --add-rule ipv4 nat POSTROUTING 0 -s "$vpn_network" ! -d "$vpn_network" -j SNAT --to "$ip"
 
-        if [[ "$ipv6_enabled" == "true" ]]; then
-            local ipv6_prefix=$(echo "$server_ip6" | rev | cut -d ':' -f2- | rev)
-            firewall-cmd --zone=trusted --add-source=${ipv6_prefix}::/64
-            firewall-cmd --permanent --zone=trusted --add-source=${ipv6_prefix}::/64
-            firewall-cmd --direct --add-rule ipv6 nat POSTROUTING 0 -s ${ipv6_prefix}::/64 ! -d ${ipv6_prefix}::/64 -j SNAT --to "$server_ip6"
-            firewall-cmd --permanent --direct --add-rule ipv6 nat POSTROUTING 0 -s ${ipv6_prefix}::/64 ! -d ${ipv6_prefix}::/64 -j SNAT --to "$server_ip6"
+        if [[ "$ipv6_enabled" == "true" && -n "$server_ip6" ]]; then
+            # Extract the ipv6 prefix
+            local ipv6_network
+            if [[ "$server_ip6" == *"::"* ]]; then
+                # For addresses with ::
+                ipv6_network=$(echo "$server_ip6" | sed 's/::.*/::/g')
+            else
+                # For addresses without ::
+                ipv6_network=$(echo "$server_ip6" | rev | cut -d':' -f2- | rev)"::/64"
+            fi
+
+            firewall-cmd --zone=trusted --add-source="$ipv6_network"
+            firewall-cmd --permanent --zone=trusted --add-source="$ipv6_network"
+            firewall-cmd --direct --add-rule ipv6 nat POSTROUTING 0 -s "$ipv6_network" ! -d "$ipv6_network" -j SNAT --to "$server_ip6"
+            firewall-cmd --permanent --direct --add-rule ipv6 nat POSTROUTING 0 -s "$ipv6_network" ! -d "$ipv6_network" -j SNAT --to "$server_ip6"
         fi
     else
         # Create iptables service
@@ -330,30 +343,36 @@ EOF
             ip6tables_path=$(command -v ip6tables-legacy)
         fi
 
-        # Extract base IPv4 address
-        local base_ip=$(echo "$server_ip" | cut -d'.' -f1-3)
-
         # Create iptables service
         echo "[Unit]
 Before=network.target
 [Service]
 Type=oneshot
-ExecStart=$iptables_path -t nat -A POSTROUTING -s ${base_ip}.0/24 ! -d ${base_ip}.0/24 -j SNAT --to $server_ip
+ExecStart=$iptables_path -t nat -A POSTROUTING -s $vpn_network ! -d $vpn_network -j SNAT --to $ip
 ExecStart=$iptables_path -I INPUT -p udp --dport $port -j ACCEPT
-ExecStart=$iptables_path -I FORWARD -s ${base_ip}.0/24 -j ACCEPT
+ExecStart=$iptables_path -I FORWARD -s $vpn_network -j ACCEPT
 ExecStart=$iptables_path -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
-ExecStop=$iptables_path -t nat -D POSTROUTING -s ${base_ip}.0/24 ! -d ${base_ip}.0/24 -j SNAT --to $server_ip
+ExecStop=$iptables_path -t nat -D POSTROUTING -s $vpn_network ! -d $vpn_network -j SNAT --to $ip
 ExecStop=$iptables_path -D INPUT -p udp --dport $port -j ACCEPT
-ExecStop=$iptables_path -D FORWARD -s ${base_ip}.0/24 -j ACCEPT
+ExecStop=$iptables_path -D FORWARD -s $vpn_network -j ACCEPT
 ExecStop=$iptables_path -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT" > /etc/systemd/system/wg-iptables.service
 
-        if [[ "$ipv6_enabled" == "true" ]]; then
-            local ipv6_prefix=$(echo "$server_ip6" | rev | cut -d ':' -f2- | rev)
-            echo "ExecStart=$ip6tables_path -t nat -A POSTROUTING -s ${ipv6_prefix}::/64 ! -d ${ipv6_prefix}::/64 -j SNAT --to $server_ip6
-ExecStart=$ip6tables_path -I FORWARD -s ${ipv6_prefix}::/64 -j ACCEPT
+        if [[ "$ipv6_enabled" == "true" && -n "$server_ip6" ]]; then
+            # Extract the ipv6 prefix
+            local ipv6_network
+            if [[ "$server_ip6" == *"::"* ]]; then
+                # For addresses with ::
+                ipv6_network=$(echo "$server_ip6" | sed 's/::.*/::/g')
+            else
+                # For addresses without ::
+                ipv6_network=$(echo "$server_ip6" | rev | cut -d':' -f2- | rev)"::/64"
+            fi
+
+            echo "ExecStart=$ip6tables_path -t nat -A POSTROUTING -s $ipv6_network ! -d $ipv6_network -j SNAT --to $server_ip6
+ExecStart=$ip6tables_path -I FORWARD -s $ipv6_network -j ACCEPT
 ExecStart=$ip6tables_path -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
-ExecStop=$ip6tables_path -t nat -D POSTROUTING -s ${ipv6_prefix}::/64 ! -d ${ipv6_prefix}::/64 -j SNAT --to $server_ip6
-ExecStop=$ip6tables_path -D FORWARD -s ${ipv6_prefix}::/64 -j ACCEPT
+ExecStop=$ip6tables_path -t nat -D POSTROUTING -s $ipv6_network ! -d $ipv6_network -j SNAT --to $server_ip6
+ExecStop=$ip6tables_path -D FORWARD -s $ipv6_network -j ACCEPT
 ExecStop=$ip6tables_path -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT" >> /etc/systemd/system/wg-iptables.service
         fi
 
@@ -367,7 +386,7 @@ WantedBy=multi-user.target" >> /etc/systemd/system/wg-iptables.service
     # Create client configurations
     local client_count=$(yq e '.clients | length' "$CONFIG_FILE")
 
-    # Extract base IPv4 address
+    # Get IP base and network for calculating client IPs
     local base_ip=$(echo "$server_ip" | cut -d'.' -f1-3)
 
     for i in $(seq 0 $((client_count-1))); do
@@ -387,9 +406,26 @@ WantedBy=multi-user.target" >> /etc/systemd/system/wg-iptables.service
         local client_public_key=$(echo "$client_private_key" | wg pubkey)
         local client_preshared_key=$(wg genpsk)
 
-        # Calculate client IP - base on octet 2
+        # Calculate client IP - start from octet 2
         local octet=$((i+2))
         local client_ip="${base_ip}.${octet}"
+
+        # Setup IPv6 if enabled
+        local client_ipv6_config=""
+        if [[ "$ipv6_enabled" == "true" && -n "$server_ip6" ]]; then
+            # Extract ipv6 prefix for client
+            if [[ "$server_ip6" == *"::"* ]]; then
+                # For addresses with ::
+                local ipv6_prefix=$(echo "$server_ip6" | sed 's/::.*/::/g')
+                client_ipv6_config=", ${ipv6_prefix}${octet}/128"
+                client_ipv6=", ${ipv6_prefix}${octet}/64"
+            else
+                # For addresses without ::
+                local ipv6_prefix=$(echo "$server_ip6" | rev | cut -d':' -f2- | rev)
+                client_ipv6_config=", ${ipv6_prefix}::${octet}/128"
+                client_ipv6=", ${ipv6_prefix}::${octet}/64"
+            fi
+        fi
 
         # Configure client in the server
         cat << EOF >> /etc/wireguard/wg0.conf
@@ -397,14 +433,11 @@ WantedBy=multi-user.target" >> /etc/systemd/system/wg-iptables.service
 [Peer]
 PublicKey = $client_public_key
 PresharedKey = $client_preshared_key
-AllowedIPs = $client_ip/32$([ "$ipv6_enabled" == "true" ] && echo ", ${ipv6_prefix}::${octet}/128")
+AllowedIPs = $client_ip/32$client_ipv6_config
 # END_PEER $client_name
 EOF
 
         # Create client configuration file
-        local client_ipv6=""
-        [[ "$ipv6_enabled" == "true" ]] && client_ipv6=", ${ipv6_prefix}::${octet}/64"
-
         cat << EOF > ~/"$client_name.conf"
 [Interface]
 Address = $client_ip/24$client_ipv6
