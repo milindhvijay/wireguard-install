@@ -31,6 +31,24 @@ DEFAULT_MTU=1420
 DEFAULT_PORT=51820
 YAML_MODIFIED=false
 
+# Function to properly format IPv6 addresses
+format_ipv6_address() {
+  local prefix=$1
+  local suffix=$2
+
+  # Remove any trailing colons from prefix
+  prefix=$(echo "$prefix" | sed 's/:*$//')
+
+  # If the prefix already contains ::, it's an abbreviated form
+  if [[ "$prefix" == *"::"* ]]; then
+    # Just append the suffix (ensure no extra colons)
+    echo "${prefix}${suffix}"
+  else
+    # Add :: between prefix and suffix
+    echo "${prefix}::${suffix}"
+  fi
+}
+
 # Function to get IP address of an interface
 get_interface_ip() {
   local interface=$1
@@ -95,44 +113,24 @@ get_next_available_ip() {
 }
 
 # Function to calculate next available IPv6 address
-# Function to calculate next available IPv6 address
 get_next_available_ipv6() {
   local network_base=$1
   local network_prefix=$2
   local used_ips=$3
   local ipv4_last_octet=$4  # Optional: Use IPv4 pattern for IPv6 assignment
 
-  # Normalize the IPv6 address by removing trailing colons
-  network_base=$(echo "$network_base" | sed 's/:*$//')
+  # Start with the last octet from IPv4 or 2 if not provided
+  local host_id=${ipv4_last_octet:-2}
 
-  # If IPv4 last octet is provided, use it for consistency
-  if [ -n "$ipv4_last_octet" ]; then
-    host_id=$ipv4_last_octet
-  else
-    # Start with 2 as the host part (1 is server)
-    host_id=2
-  fi
+  # Generate candidate IP
+  local candidate_ip=$(format_ipv6_address "$network_base" "$host_id")
 
-  # Check if network_base already contains ::
-  if [[ "$network_base" == *"::"* ]]; then
-    # If it contains ::, append directly
-    candidate_ip="${network_base}${host_id}"
-  else
-    # If it doesn't have :: yet, add it before the host ID
-    candidate_ip="${network_base}::${host_id}"
-  fi
-
-  # Find next available IP if this one is already used
+  # Check if this IP is available
   if echo "$used_ips" | grep -q "$candidate_ip"; then
     # Try incrementing the host ID until we find an available one
     local max_attempts=100  # Avoid infinite loop
     for ((i=host_id+1; i<host_id+max_attempts; i++)); do
-      if [[ "$network_base" == *"::"* ]]; then
-        candidate_ip="${network_base}${i}"
-      else
-        candidate_ip="${network_base}::${i}"
-      fi
-
+      candidate_ip=$(format_ipv6_address "$network_base" "$i")
       if ! echo "$used_ips" | grep -q "$candidate_ip"; then
         echo "$candidate_ip"
         return 0
@@ -210,7 +208,8 @@ if [ "$SERVER_INTERNAL_IPV6_SUBNET" != "null" ] && [ -n "$SERVER_INTERNAL_IPV6_S
     IPV6_BASE=$(echo "$SERVER_INTERNAL_IPV6_SUBNET" | cut -d'/' -f1)
 
     # Assign ::1 to server if not specified
-    SERVER_INTERNAL_IPV6="${IPV6_BASE}::1/${IPV6_PREFIX}"
+    SERVER_INTERNAL_IPV6=$(format_ipv6_address "$IPV6_BASE" "1")
+    SERVER_INTERNAL_IPV6="${SERVER_INTERNAL_IPV6}/${IPV6_PREFIX}"
     echo "Assigned server IPv6: $SERVER_INTERNAL_IPV6"
   fi
 fi
@@ -284,7 +283,9 @@ USED_IPS="$NETWORK_BASE.$SERVER_IP_LAST_OCTET"  # Server IP is used
 
 # Collect used IPv6 addresses if enabled
 if [ "$IPV6_ENABLED" = true ]; then
-  USED_IPV6="$SERVER_INTERNAL_IPV6"  # Server IPv6 is used
+  # Strip CIDR notation for server IPv6
+  SERVER_IPV6_STRIPPED=${SERVER_INTERNAL_IPV6%/*}
+  USED_IPV6="$SERVER_IPV6_STRIPPED"  # Server IPv6 is used
 fi
 
 # Get existing client IPs from YAML
@@ -820,18 +821,13 @@ $NEW_IP"
     IPV4_LAST_OCTET=$(echo "$CLIENT_IP" | cut -d'.' -f4 | cut -d'/' -f1)
 
     # Generate IPv6 address using the last octet pattern
-    NEW_IPV6=$(get_next_available_ipv6 "$IPV6_NETWORK_BASE" "$IPV6_NETWORK_PREFIX" "$USED_IPV6" "$IPV4_LAST_OCTET")
-    if [ $? -ne 0 ]; then
-      echo "$NEW_IPV6"  # This contains the error message
-      exit 1
-    fi
-
+    NEW_IPV6=$(format_ipv6_address "$IPV6_NETWORK_BASE" "$IPV4_LAST_OCTET")
     CLIENT_IPV6="${NEW_IPV6}/${IPV6_NETWORK_PREFIX}"
     echo "Assigned IPv6 address $CLIENT_IPV6 to client $CLIENT_NAME"
 
     # Add to used IPv6 addresses
     USED_IPV6="$USED_IPV6
-  $NEW_IPV6"
+$NEW_IPV6"
 
     # Track for YAML update
     if ! [[ " ${UPDATED_CLIENTS[@]} " =~ " $i " ]]; then
@@ -840,7 +836,6 @@ $NEW_IP"
     UPDATED_IPV6S+=("$CLIENT_IPV6")
     YAML_MODIFIED=true
   fi
-
 
   # Generate client keys
   generate_keys "$CLIENT_NAME"
@@ -892,7 +887,7 @@ EOF
 [Peer]
 PublicKey = $SERVER_PUBLIC_KEY
 Endpoint = ${SERVER_ENDPOINT}:${SERVER_PORT}
-AllowedIPs = $CLIENT_ALLOWED_IPS
+AllowedIPs = $YAML_ALLOWED_IPS
 EOF
 
   # Add persistent keepalive if specified
@@ -925,13 +920,13 @@ if [ "$YAML_MODIFIED" = true ]; then
     client_index=${UPDATED_CLIENTS[$i]}
 
     # Update IPv4 address if assigned
-    if [ $i -lt ${#UPDATED_IPS[@]} ]; then
+    if (( i < ${#UPDATED_IPS[@]} )); then
       client_ip=${UPDATED_IPS[$i]}
       yq -i ".clients[$client_index].internal_ip = \"$client_ip\"" "$CONFIG_FILE"
     fi
 
     # Update IPv6 address if assigned
-    if [ $i -lt ${#UPDATED_IPV6S[@]} ]; then
+    if (( i < ${#UPDATED_IPV6S[@]} )); then
       client_ipv6=${UPDATED_IPV6S[$i]}
       yq -i ".clients[$client_index].internal_ipv6 = \"$client_ipv6\"" "$CONFIG_FILE"
     fi
