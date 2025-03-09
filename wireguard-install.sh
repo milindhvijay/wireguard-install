@@ -95,47 +95,55 @@ get_next_available_ip() {
 }
 
 # Function to calculate next available IPv6 address
+# Function to calculate next available IPv6 address
 get_next_available_ipv6() {
   local network_base=$1
   local network_prefix=$2
   local used_ips=$3
   local ipv4_last_octet=$4  # Optional: Use IPv4 pattern for IPv6 assignment
 
-  # Normalize the IPv6 address by expanding it
-  local expanded_base=$(sipcalc "$network_base" | grep "Expanded Address" | awk '{print $4}')
-  if [ -z "$expanded_base" ]; then
-    # If sipcalc isn't available, do basic expansion (less robust)
-    expanded_base=$network_base
-  fi
-
-  # Start with ::2 as the host part (::1 is server)
-  local host_id=2
+  # Normalize the IPv6 address by removing trailing colons
+  network_base=$(echo "$network_base" | sed 's/:*$//')
 
   # If IPv4 last octet is provided, use it for consistency
   if [ -n "$ipv4_last_octet" ]; then
     host_id=$ipv4_last_octet
+  else
+    # Start with 2 as the host part (1 is server)
+    host_id=2
   fi
 
-  # Convert base to prefix part (remove last segment if it has one)
-  local prefix_part=$(echo "$network_base" | sed 's/::.*$/::/')
-  if [ "$prefix_part" = "$network_base" ]; then
-    # If no :: in the address, get prefix based on length
-    prefix_part=$(echo "$network_base" | cut -d':' -f1-$((network_prefix/16)))
+  # Check if network_base already contains ::
+  if [[ "$network_base" == *"::"* ]]; then
+    # If it contains ::, append directly
+    candidate_ip="${network_base}${host_id}"
+  else
+    # If it doesn't have :: yet, add it before the host ID
+    candidate_ip="${network_base}::${host_id}"
   fi
 
-  # Find next available IP
-  local max_attempts=100  # Avoid infinite loop
-  for ((i=0; i<max_attempts; i++)); do
-    local candidate_ip="${prefix_part}${host_id}"
-    if ! echo "$used_ips" | grep -q "$candidate_ip"; then
-      echo "$candidate_ip"
-      return 0
-    fi
-    ((host_id++))
-  done
+  # Find next available IP if this one is already used
+  if echo "$used_ips" | grep -q "$candidate_ip"; then
+    # Try incrementing the host ID until we find an available one
+    local max_attempts=100  # Avoid infinite loop
+    for ((i=host_id+1; i<host_id+max_attempts; i++)); do
+      if [[ "$network_base" == *"::"* ]]; then
+        candidate_ip="${network_base}${i}"
+      else
+        candidate_ip="${network_base}::${i}"
+      fi
 
-  echo "Error: No available IPv6 addresses found after $max_attempts attempts"
-  return 1
+      if ! echo "$used_ips" | grep -q "$candidate_ip"; then
+        echo "$candidate_ip"
+        return 0
+      fi
+    done
+    echo "Error: No available IPv6 addresses found after $max_attempts attempts"
+    return 1
+  fi
+
+  echo "$candidate_ip"
+  return 0
 }
 
 # Check if config file exists
@@ -812,13 +820,18 @@ $NEW_IP"
     IPV4_LAST_OCTET=$(echo "$CLIENT_IP" | cut -d'.' -f4 | cut -d'/' -f1)
 
     # Generate IPv6 address using the last octet pattern
-    NEW_IPV6="${IPV6_NETWORK_BASE}::${IPV4_LAST_OCTET}"
+    NEW_IPV6=$(get_next_available_ipv6 "$IPV6_NETWORK_BASE" "$IPV6_NETWORK_PREFIX" "$USED_IPV6" "$IPV4_LAST_OCTET")
+    if [ $? -ne 0 ]; then
+      echo "$NEW_IPV6"  # This contains the error message
+      exit 1
+    fi
+
     CLIENT_IPV6="${NEW_IPV6}/${IPV6_NETWORK_PREFIX}"
     echo "Assigned IPv6 address $CLIENT_IPV6 to client $CLIENT_NAME"
 
     # Add to used IPv6 addresses
     USED_IPV6="$USED_IPV6
-$NEW_IPV6"
+  $NEW_IPV6"
 
     # Track for YAML update
     if ! [[ " ${UPDATED_CLIENTS[@]} " =~ " $i " ]]; then
@@ -827,6 +840,7 @@ $NEW_IPV6"
     UPDATED_IPV6S+=("$CLIENT_IPV6")
     YAML_MODIFIED=true
   fi
+
 
   # Generate client keys
   generate_keys "$CLIENT_NAME"
