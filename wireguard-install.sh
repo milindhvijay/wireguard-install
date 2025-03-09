@@ -120,7 +120,7 @@ fi
 # Extract server details from YAML
 SERVER_ENDPOINT=$(yq '.server.endpoint' "$CONFIG_FILE")
 SERVER_PORT=$(yq '.server.port' "$CONFIG_FILE")
-SERVER_INTERNAL_IP=$(yq '.server.internal_ip' "$CONFIG_FILE")
+SERVER_INTERNAL_IP=$(yq '.server.internal_ip' "$CONFIG_FILE" | tr -d '"')
 SERVER_INTERFACE=$(yq '.server.interface_name' "$CONFIG_FILE" || echo "wg0")
 SERVER_HOST_INTERFACE=$(yq '.server.host_interface' "$CONFIG_FILE" | tr -d '"')
 SERVER_MTU=$(yq '.server.mtu' "$CONFIG_FILE")
