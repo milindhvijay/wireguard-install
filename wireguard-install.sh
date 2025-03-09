@@ -26,7 +26,7 @@ if ! command -v yq &> /dev/null; then
 fi
 
 # Default config file location
-CONFIG_FILE="wireguard-config.yaml"
+CONFIG_FILE="wireguard.yaml"
 
 # Check if config file exists
 if [ ! -f "$CONFIG_FILE" ]; then
