@@ -47,6 +47,22 @@ get_interface_ip() {
   echo "$ip_address"
 }
 
+# Function to get IPv6 address of an interface
+get_interface_ipv6() {
+  local interface=$1
+  local ipv6_address
+
+  # Try to get global IPv6 address (skip link-local)
+  ipv6_address=$(ip -6 addr show dev "$interface" scope global | grep -oP '(?<=inet6\s)[0-9a-f:]+' | head -n 1)
+
+  if [ -z "$ipv6_address" ]; then
+    echo "Warning: No global IPv6 address found for interface $interface"
+    return 1
+  fi
+
+  echo "$ipv6_address"
+}
+
 # Function to calculate next available IP in range
 get_next_available_ip() {
   local network_base=$1
@@ -75,6 +91,50 @@ get_next_available_ip() {
   done
 
   echo "Error: No available IPs in the subnet"
+  return 1
+}
+
+# Function to calculate next available IPv6 address
+get_next_available_ipv6() {
+  local network_base=$1
+  local network_prefix=$2
+  local used_ips=$3
+  local ipv4_last_octet=$4  # Optional: Use IPv4 pattern for IPv6 assignment
+
+  # Normalize the IPv6 address by expanding it
+  local expanded_base=$(sipcalc "$network_base" | grep "Expanded Address" | awk '{print $4}')
+  if [ -z "$expanded_base" ]; then
+    # If sipcalc isn't available, do basic expansion (less robust)
+    expanded_base=$network_base
+  fi
+
+  # Start with ::2 as the host part (::1 is server)
+  local host_id=2
+
+  # If IPv4 last octet is provided, use it for consistency
+  if [ -n "$ipv4_last_octet" ]; then
+    host_id=$ipv4_last_octet
+  fi
+
+  # Convert base to prefix part (remove last segment if it has one)
+  local prefix_part=$(echo "$network_base" | sed 's/::.*$/::/')
+  if [ "$prefix_part" = "$network_base" ]; then
+    # If no :: in the address, get prefix based on length
+    prefix_part=$(echo "$network_base" | cut -d':' -f1-$((network_prefix/16)))
+  fi
+
+  # Find next available IP
+  local max_attempts=100  # Avoid infinite loop
+  for ((i=0; i<max_attempts; i++)); do
+    local candidate_ip="${prefix_part}${host_id}"
+    if ! echo "$used_ips" | grep -q "$candidate_ip"; then
+      echo "$candidate_ip"
+      return 0
+    fi
+    ((host_id++))
+  done
+
+  echo "Error: No available IPv6 addresses found after $max_attempts attempts"
   return 1
 }
 
@@ -121,11 +181,31 @@ fi
 SERVER_ENDPOINT=$(yq '.server.endpoint' "$CONFIG_FILE")
 SERVER_PORT=$(yq '.server.port' "$CONFIG_FILE")
 SERVER_INTERNAL_IP=$(yq '.server.internal_ip' "$CONFIG_FILE")
+SERVER_INTERNAL_IPV6=$(yq '.server.internal_ipv6' "$CONFIG_FILE")
 SERVER_INTERFACE=$(yq '.server.interface_name' "$CONFIG_FILE" || echo "wg0")
 SERVER_HOST_INTERFACE=$(yq '.server.host_interface' "$CONFIG_FILE")
 SERVER_MTU=$(yq '.server.mtu' "$CONFIG_FILE")
 SERVER_POST_UP=$(yq '.server.post_up' "$CONFIG_FILE")
 SERVER_POST_DOWN=$(yq '.server.post_down' "$CONFIG_FILE")
+
+# Get IPv6 subnet if available
+SERVER_INTERNAL_IPV6_SUBNET=$(yq '.server.internal_ipv6_subnet' "$CONFIG_FILE")
+IPV6_ENABLED=false
+if [ "$SERVER_INTERNAL_IPV6_SUBNET" != "null" ] && [ -n "$SERVER_INTERNAL_IPV6_SUBNET" ]; then
+  IPV6_ENABLED=true
+  echo "IPv6 subnet configured: $SERVER_INTERNAL_IPV6_SUBNET"
+
+  # If server IPv6 address not specified, use the first address in subnet
+  if [ "$SERVER_INTERNAL_IPV6" == "null" ] || [ -z "$SERVER_INTERNAL_IPV6" ]; then
+    # Extract prefix length
+    IPV6_PREFIX=$(echo "$SERVER_INTERNAL_IPV6_SUBNET" | cut -d'/' -f2)
+    IPV6_BASE=$(echo "$SERVER_INTERNAL_IPV6_SUBNET" | cut -d'/' -f1)
+
+    # Assign ::1 to server if not specified
+    SERVER_INTERNAL_IPV6="${IPV6_BASE}::1/${IPV6_PREFIX}"
+    echo "Assigned server IPv6: $SERVER_INTERNAL_IPV6"
+  fi
+fi
 
 # Set default port if not specified
 if [ "$SERVER_PORT" == "null" ] || [ -z "$SERVER_PORT" ]; then
@@ -171,8 +251,33 @@ NETWORK="${NETWORK_BASE}.0/${NETWORK_PREFIX}"
 
 echo "Server network: $NETWORK (Base: $NETWORK_BASE, Prefix: $NETWORK_PREFIX)"
 
+# Parse IPv6 subnet if enabled
+if [ "$IPV6_ENABLED" = true ]; then
+  # Extract IPv6 prefix
+  if ! [[ "$SERVER_INTERNAL_IPV6_SUBNET" =~ ^([0-9a-f:]+)/([0-9]+)$ ]]; then
+    echo "Error: Invalid IPv6 subnet format. Expected format: xxxx:xxxx::/yy"
+    exit 1
+  fi
+
+  IPV6_NETWORK_BASE="${BASH_REMATCH[1]}"
+  IPV6_NETWORK_PREFIX="${BASH_REMATCH[2]}"
+  echo "IPv6 network: $IPV6_NETWORK_BASE/$IPV6_NETWORK_PREFIX"
+
+  # Extract server IPv6 last part if defined
+  if [[ "$SERVER_INTERNAL_IPV6" =~ ^.*::([0-9a-f]+)/([0-9]+)$ ]]; then
+    IPV6_SERVER_LAST_PART="${BASH_REMATCH[1]}"
+  else
+    IPV6_SERVER_LAST_PART="1"  # Default to ::1
+  fi
+fi
+
 # Collect all used IPs
 USED_IPS="$NETWORK_BASE.$SERVER_IP_LAST_OCTET"  # Server IP is used
+
+# Collect used IPv6 addresses if enabled
+if [ "$IPV6_ENABLED" = true ]; then
+  USED_IPV6="$SERVER_INTERNAL_IPV6"  # Server IPv6 is used
+fi
 
 # Get existing client IPs from YAML
 CLIENT_COUNT=$(yq '.clients | length' "$CONFIG_FILE")
@@ -184,22 +289,49 @@ for (( i=0; i<$CLIENT_COUNT; i++ )); do
     USED_IPS="$USED_IPS
 $CLIENT_IP"
   fi
+
+  # Get IPv6 address if enabled
+  if [ "$IPV6_ENABLED" = true ]; then
+    CLIENT_IPV6=$(yq ".clients[$i].internal_ipv6" "$CONFIG_FILE")
+    if [ "$CLIENT_IPV6" != "null" ] && [ -n "$CLIENT_IPV6" ]; then
+      # Strip the CIDR notation if present
+      CLIENT_IPV6=${CLIENT_IPV6%/*}
+      USED_IPV6="$USED_IPV6
+$CLIENT_IPV6"
+    fi
+  fi
 done
 
 # Collect IPs from existing WireGuard config if it exists
 if [ -f "$SERVER_CONFIG" ]; then
   while read -r line; do
     if [[ "$line" =~ ^AllowedIPs\ =\ (.+)$ ]]; then
-      ip="${BASH_REMATCH[1]}"
-      # Strip the CIDR notation if present
-      ip=${ip%/*}
-      USED_IPS="$USED_IPS
+      ips="${BASH_REMATCH[1]}"
+      # Handle multiple AllowedIPs separated by commas
+      IFS=',' read -ra IP_ARRAY <<< "$ips"
+      for ip in "${IP_ARRAY[@]}"; do
+        # Strip the CIDR notation if present
+        ip=$(echo "$ip" | xargs)  # Trim whitespace
+        if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]]; then
+          # IPv4 address
+          ip=${ip%/*}
+          USED_IPS="$USED_IPS
 $ip"
+        elif [ "$IPV6_ENABLED" = true ] && [[ "$ip" =~ ^[0-9a-f:]+(/[0-9]+)?$ ]]; then
+          # IPv6 address
+          ip=${ip%/*}
+          USED_IPV6="$USED_IPV6
+$ip"
+        fi
+      done
     fi
   done < "$SERVER_CONFIG"
 fi
 
 echo "Used IPs in network: $(echo "$USED_IPS" | tr '\n' ' ')"
+if [ "$IPV6_ENABLED" = true ]; then
+  echo "Used IPv6 addresses: $(echo "$USED_IPV6" | tr '\n' ' ')"
+fi
 
 # Default PostUp/PostDown rules with placeholder for host interface
 DEFAULT_POST_UP="iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o %h -j MASQUERADE; ip6tables -A FORWARD -i %i -j ACCEPT; ip6tables -t nat -A POSTROUTING -o %h -j MASQUERADE"
@@ -209,13 +341,19 @@ DEFAULT_POST_DOWN="iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTR
 if [ "$SERVER_EXISTS" = false ]; then
   echo "Creating new server configuration..."
 
-  # Create server config
+  # Create server config with IPv4 address
   cat > "$SERVER_CONFIG" << EOF
 [Interface]
 PrivateKey = $SERVER_PRIVATE_KEY
 Address = $SERVER_INTERNAL_IP
-ListenPort = $SERVER_PORT
 EOF
+
+  # Add IPv6 address if enabled
+  if [ "$IPV6_ENABLED" = true ]; then
+    echo "Address = $SERVER_INTERNAL_IPV6" >> "$SERVER_CONFIG"
+  fi
+
+  echo "ListenPort = $SERVER_PORT" >> "$SERVER_CONFIG"
 
   # Add optional server parameters
   if [ "$SERVER_MTU" != "null" ]; then
@@ -410,6 +548,7 @@ for client_name in "${EXISTING_CLIENTS[@]}"; do
 
   # Get client properties from YAML
   YAML_IP=$(yq ".clients[$client_index].internal_ip" "$CONFIG_FILE")
+  YAML_IPV6=$(yq ".clients[$client_index].internal_ipv6" "$CONFIG_FILE")
   YAML_DNS=$(yq ".clients[$client_index].dns" "$CONFIG_FILE")
   YAML_ALLOWED_IPS=$(yq ".clients[$client_index].allowed_ips" "$CONFIG_FILE")
   YAML_KEEPALIVE=$(yq ".clients[$client_index].persistent_keepalive" "$CONFIG_FILE")
@@ -423,7 +562,9 @@ for client_name in "${EXISTING_CLIENTS[@]}"; do
   fi
 
   # Extract current values from client config
-  CURRENT_IP=$(grep "^Address = " "$CLIENT_CONFIG" | cut -d ' ' -f 3)
+  # Note: With dual-stack, we may have multiple Address lines
+  CURRENT_IP=$(grep "^Address = " "$CLIENT_CONFIG" | grep -v ":" | head -n 1 | cut -d ' ' -f 3)
+  CURRENT_IPV6=$(grep "^Address = " "$CLIENT_CONFIG" | grep ":" | head -n 1 | cut -d ' ' -f 3)
   CURRENT_DNS=$(grep "^DNS = " "$CLIENT_CONFIG" | cut -d ' ' -f 3)
   CURRENT_ALLOWED_IPS=$(grep "^AllowedIPs = " "$CLIENT_CONFIG" | cut -d ' ' -f 3)
   CURRENT_KEEPALIVE=$(grep "^PersistentKeepalive = " "$CLIENT_CONFIG" | cut -d ' ' -f 3)
@@ -432,6 +573,11 @@ for client_name in "${EXISTING_CLIENTS[@]}"; do
   # Strip CIDR notation for comparison if present
   CURRENT_IP_STRIPPED=${CURRENT_IP%/*}
   YAML_IP_STRIPPED=${YAML_IP%/*}
+
+  if [ "$IPV6_ENABLED" = true ]; then
+    CURRENT_IPV6_STRIPPED=${CURRENT_IPV6%/*}
+    YAML_IPV6_STRIPPED=${YAML_IPV6%/*}
+  fi
 
   # Check for changes
   CHANGES=""
@@ -443,6 +589,20 @@ for client_name in "${EXISTING_CLIENTS[@]}"; do
   if [ "$YAML_IP" != "null" ] && [ "$YAML_IP_STRIPPED" != "$CURRENT_IP_STRIPPED" ]; then
     CHANGES="${CHANGES}IP ($CURRENT_IP → $YAML_IP), "
   fi
+
+  # Check for IPv6 changes if enabled
+  if [ "$IPV6_ENABLED" = true ]; then
+    if [ "$YAML_IPV6" != "null" ] && [ "$YAML_IPV6_STRIPPED" != "$CURRENT_IPV6_STRIPPED" ]; then
+      CHANGES="${CHANGES}IPv6 ($CURRENT_IPV6 → $YAML_IPV6), "
+    elif [ "$YAML_IPV6" = "null" ] && [ -n "$CURRENT_IPV6" ]; then
+      # IPv6 was removed from YAML
+      CHANGES="${CHANGES}IPv6 (removed), "
+    elif [ "$YAML_IPV6" != "null" ] && [ -z "$CURRENT_IPV6" ]; then
+      # IPv6 was added to YAML
+      CHANGES="${CHANGES}IPv6 (added: $YAML_IPV6), "
+    fi
+  fi
+
   if [ "$YAML_DNS" != "null" ] && [ "$YAML_DNS" != "$CURRENT_DNS" ]; then
     CHANGES="${CHANGES}DNS ($CURRENT_DNS → $YAML_DNS), "
   elif [ "$YAML_DNS" = "null" ] && [ -n "$CURRENT_DNS" ]; then
@@ -473,12 +633,17 @@ for client_name in "${EXISTING_CLIENTS[@]}"; do
   # Backup client config
   cp "$CLIENT_CONFIG" "${CLIENT_CONFIG}.bak"
 
-  # Generate updated client config
+  # Generate updated client config with IPv4 address
   cat > "$CLIENT_CONFIG" << EOF
 [Interface]
 PrivateKey = $(grep "^PrivateKey = " "$CLIENT_CONFIG" | cut -d ' ' -f 3)
 Address = $YAML_IP
 EOF
+
+  # Add IPv6 address if enabled and specified
+  if [ "$IPV6_ENABLED" = true ] && [ "$YAML_IPV6" != "null" ] && [ -n "$YAML_IPV6" ]; then
+    echo "Address = $YAML_IPV6" >> "$CLIENT_CONFIG"
+  fi
 
   # Add MTU
   if [ "$YAML_MTU" != "null" ]; then
@@ -506,8 +671,9 @@ EOF
     echo "PersistentKeepalive = $YAML_KEEPALIVE" >> "$CLIENT_CONFIG"
   fi
 
-  # Update server config if IP changed
-  if [ "$YAML_IP" != "null" ] && [ "$YAML_IP_STRIPPED" != "$CURRENT_IP_STRIPPED" ]; then
+  # Update server config if IP or IPv6 changed
+  if [ "$YAML_IP" != "null" ] && [ "$YAML_IP_STRIPPED" != "$CURRENT_IP_STRIPPED" ] ||
+     [ "$IPV6_ENABLED" = true ] && [ "$YAML_IPV6" != "null" ] && [ "$YAML_IPV6_STRIPPED" != "$CURRENT_IPV6_STRIPPED" ]; then
     # Use temporary file to rebuild server config with updated IP
     TEMP_SERVER_CONFIG=$(mktemp)
 
@@ -535,8 +701,21 @@ EOF
         # Write the name line no matter what
         echo "$next_line" >> "$TEMP_SERVER_CONFIG"
       elif [ "$in_target_peer" = true ] && [[ "$line" =~ ^AllowedIPs\ =\ (.+)$ ]]; then
-        # Replace the AllowedIPs line with the new IP
-        echo "AllowedIPs = $YAML_IP" >> "$TEMP_SERVER_CONFIG"
+        # Combine IPv4 and IPv6 addresses
+        allowed_ips=""
+        if [ "$YAML_IP" != "null" ]; then
+          allowed_ips="$YAML_IP"
+        fi
+
+        if [ "$IPV6_ENABLED" = true ] && [ "$YAML_IPV6" != "null" ]; then
+          if [ -n "$allowed_ips" ]; then
+            allowed_ips="$allowed_ips, $YAML_IPV6"
+          else
+            allowed_ips="$YAML_IPV6"
+          fi
+        fi
+
+        echo "AllowedIPs = $allowed_ips" >> "$TEMP_SERVER_CONFIG"
       else
         # Write all other lines unchanged
         echo "$line" >> "$TEMP_SERVER_CONFIG"
@@ -574,6 +753,7 @@ CLIENT_COUNT=$(yq '.clients | length' "$CONFIG_FILE")
 ADDED_NEW_CLIENTS=false
 UPDATED_CLIENTS=()
 UPDATED_IPS=()
+UPDATED_IPV6S=()
 
 for (( i=0; i<$CLIENT_COUNT; i++ )); do
   CLIENT_NAME=$(yq ".clients[$i].name" "$CONFIG_FILE")
@@ -597,12 +777,13 @@ for (( i=0; i<$CLIENT_COUNT; i++ )); do
   ADDED_NEW_CLIENTS=true
 
   CLIENT_IP=$(yq ".clients[$i].internal_ip" "$CONFIG_FILE")
+  CLIENT_IPV6=$(yq ".clients[$i].internal_ipv6" "$CONFIG_FILE")
   CLIENT_DNS=$(yq ".clients[$i].dns" "$CONFIG_FILE")
   CLIENT_ALLOWED_IPS=$(yq ".clients[$i].allowed_ips" "$CONFIG_FILE")
   CLIENT_KEEPALIVE=$(yq ".clients[$i].persistent_keepalive" "$CONFIG_FILE")
   CLIENT_MTU=$(yq ".clients[$i].mtu" "$CONFIG_FILE")
 
-  # Assign IP if not specified
+  # Assign IPv4 if not specified
   if [ "$CLIENT_IP" == "null" ] || [ -z "$CLIENT_IP" ]; then
     # Get next available IP
     NEW_IP=$(get_next_available_ip "$NETWORK_BASE" "$NETWORK_PREFIX" "$USED_IPS")
@@ -613,7 +794,7 @@ for (( i=0; i<$CLIENT_COUNT; i++ )); do
 
     # Add CIDR notation for client
     CLIENT_IP="${NEW_IP}/32"
-    echo "Assigned IP address $CLIENT_IP to client $CLIENT_NAME"
+    echo "Assigned IPv4 address $CLIENT_IP to client $CLIENT_NAME"
 
     # Add to used IPs
     USED_IPS="$USED_IPS
@@ -625,18 +806,45 @@ $NEW_IP"
     YAML_MODIFIED=true
   fi
 
+  # Assign IPv6 if enabled and not specified
+  if [ "$IPV6_ENABLED" = true ] && ([ "$CLIENT_IPV6" == "null" ] || [ -z "$CLIENT_IPV6" ]); then
+    # Extract the last octet from IPv4 for consistent IPv6 addressing
+    IPV4_LAST_OCTET=$(echo "$CLIENT_IP" | cut -d'.' -f4 | cut -d'/' -f1)
+
+    # Generate IPv6 address using the last octet pattern
+    NEW_IPV6="${IPV6_NETWORK_BASE}::${IPV4_LAST_OCTET}"
+    CLIENT_IPV6="${NEW_IPV6}/${IPV6_NETWORK_PREFIX}"
+    echo "Assigned IPv6 address $CLIENT_IPV6 to client $CLIENT_NAME"
+
+    # Add to used IPv6 addresses
+    USED_IPV6="$USED_IPV6
+$NEW_IPV6"
+
+    # Track for YAML update
+    if ! [[ " ${UPDATED_CLIENTS[@]} " =~ " $i " ]]; then
+      UPDATED_CLIENTS+=($i)
+    fi
+    UPDATED_IPV6S+=("$CLIENT_IPV6")
+    YAML_MODIFIED=true
+  fi
+
   # Generate client keys
   generate_keys "$CLIENT_NAME"
   CLIENT_PRIVATE_KEY=$(cat "${KEYS_DIR}/${CLIENT_NAME}.private")
   CLIENT_PUBLIC_KEY=$(cat "${KEYS_DIR}/${CLIENT_NAME}.public")
 
-  # Add client to server config
+  # Add client to server config with both IPv4 and IPv6 if available
+  SERVER_ALLOWED_IPS="$CLIENT_IP"
+  if [ "$IPV6_ENABLED" = true ] && [ "$CLIENT_IPV6" != "null" ] && [ -n "$CLIENT_IPV6" ]; then
+    SERVER_ALLOWED_IPS="$SERVER_ALLOWED_IPS, $CLIENT_IPV6"
+  fi
+
   cat >> "$SERVER_CONFIG" << EOF
 
 [Peer]
 # $CLIENT_NAME
 PublicKey = $CLIENT_PUBLIC_KEY
-AllowedIPs = $CLIENT_IP
+AllowedIPs = $SERVER_ALLOWED_IPS
 EOF
 
   # Create client config
@@ -646,6 +854,11 @@ EOF
 PrivateKey = $CLIENT_PRIVATE_KEY
 Address = $CLIENT_IP
 EOF
+
+  # Add IPv6 address if enabled
+  if [ "$IPV6_ENABLED" = true ] && [ "$CLIENT_IPV6" != "null" ] && [ -n "$CLIENT_IPV6" ]; then
+    echo "Address = $CLIENT_IPV6" >> "$CLIENT_CONFIG"
+  fi
 
   # Add MTU to client config (default 1420 if not specified)
   if [ "$CLIENT_MTU" != "null" ]; then
@@ -696,10 +909,18 @@ if [ "$YAML_MODIFIED" = true ]; then
   # Update each client that got an auto-assigned IP
   for (( i=0; i<${#UPDATED_CLIENTS[@]}; i++ )); do
     client_index=${UPDATED_CLIENTS[$i]}
-    client_ip=${UPDATED_IPS[$i]}
 
-    # Use yq to update the YAML file
-    yq -i ".clients[$client_index].internal_ip = \"$client_ip\"" "$CONFIG_FILE"
+    # Update IPv4 address if assigned
+    if [ $i -lt ${#UPDATED_IPS[@]} ]; then
+      client_ip=${UPDATED_IPS[$i]}
+      yq -i ".clients[$client_index].internal_ip = \"$client_ip\"" "$CONFIG_FILE"
+    fi
+
+    # Update IPv6 address if assigned
+    if [ $i -lt ${#UPDATED_IPV6S[@]} ]; then
+      client_ipv6=${UPDATED_IPV6S[$i]}
+      yq -i ".clients[$client_index].internal_ipv6 = \"$client_ipv6\"" "$CONFIG_FILE"
+    fi
   done
 
   echo "YAML file updated."
@@ -707,7 +928,7 @@ fi
 
 # Only restart services if we made changes
 if [ "$SERVER_EXISTS" = false ] || [ "$ADDED_NEW_CLIENTS" = true ] || [ "$CLIENTS_REMOVED" = true ] || [ "$CLIENTS_UPDATED" = true ]; then
-  # Enable IP forwarding
+  # Enable IP forwarding for both IPv4 and IPv6
   echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/99-wireguard.conf
   echo "net.ipv6.conf.all.forwarding = 1" >> /etc/sysctl.d/99-wireguard.conf
   sysctl -p /etc/sysctl.d/99-wireguard.conf >/dev/null 2>&1
@@ -732,3 +953,6 @@ if [ "$ADDED_NEW_CLIENTS" = false ] && [ "$CLIENTS_REMOVED" = false ] && [ "$CLI
 fi
 
 echo "WireGuard setup complete using host interface: $SERVER_HOST_INTERFACE with endpoint: $SERVER_ENDPOINT:$SERVER_PORT"
+if [ "$IPV6_ENABLED" = true ]; then
+  echo "Dual-stack (IPv4 + IPv6) configuration is enabled"
+fi
