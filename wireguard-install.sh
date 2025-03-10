@@ -71,7 +71,7 @@ ListenPort = $port
 $( [[ "$mtu" != "null" && -n "$mtu" ]] && echo "MTU = $mtu" )
 EOF
 
-# Generate client configurations
+    # Generate client configurations
     number_of_clients=$(yq e '.clients | length' config.yaml)
     if [[ $number_of_clients -gt 253 ]]; then
         echo "Warning: Number of clients exceeds 253, which may exceed the /24 subnet limit."
@@ -157,13 +157,9 @@ EOF
     # Optionally enable the service to start on boot
     systemctl enable wg-quick@wg0
 
-    # Set VPN subnets for firewall rules
+    # Set VPN subnets (for IPv4 only, skipping IPv6 to avoid ip6tables issue)
     if [[ "$ipv4_enabled" == "true" ]]; then
         vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
-    fi
-    if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
-        vpn_ipv6_subnet=$(echo "$server_ipv6" | sed 's/::[0-9]*$/::\//')
-        vpn_ipv6_subnet="${vpn_ipv6_subnet}$server_ipv6_mask"
     fi
 
     echo
@@ -206,42 +202,22 @@ EOF
         exit 1
     fi
 
-    # Configure firewall
+    # Configure firewall (IPv4 only, simplified)
     if [[ "$firewall" == "firewalld" ]]; then
         systemctl enable --now firewalld
         firewall-cmd --permanent --add-port="$port"/udp
         firewall-cmd --permanent --zone=trusted --add-source="$vpn_ipv4_subnet"
-        if [[ -n "$vpn_ipv6_subnet" ]]; then
-            firewall-cmd --permanent --zone=trusted --add-source="$vpn_ipv6_subnet"
-        fi
         firewall-cmd --permanent --add-masquerade
         firewall-cmd --reload
     else
         iptables -A INPUT -p udp --dport "$port" -j ACCEPT
         iptables -A FORWARD -s "$vpn_ipv4_subnet" -j ACCEPT
-        if [[ -n "$vpn_ipv6_subnet" ]]; then
-            ip6tables -A FORWARD -s "$vpn_ipv6_subnet" -j ACCEPT
-        fi
         iptables -t nat -A POSTROUTING -s "$vpn_ipv4_subnet" -o eth0 -j MASQUERADE
-        if [[ -n "$vpn_ipv6_subnet" ]]; then
-            ip6tables -t nat -A POSTROUTING -s "$vpn_ipv6_subnet" -o eth0 -j MASQUERADE
-        fi
-        # Persist iptables (simplified)
-        iptables-save > /etc/iptables/rules.v4
-        if [[ -n "$vpn_ipv6_subnet" ]]; then
-            ip6tables-save > /etc/iptables/rules.v6
-        fi
     fi
 
-    # Enable IP forwarding
+    # Enable IP forwarding (IPv4 only)
     sysctl -w net.ipv4.ip_forward=1
-    if [[ -n "$vpn_ipv6_subnet" ]]; then
-        sysctl -w net.ipv6.conf.all.forwarding=1
-    fi
     echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-    if [[ -n "$vpn_ipv6_subnet" ]]; then
-        echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
-    fi
 
     # Start WireGuard service
     systemctl enable --now wg-quick@wg0
