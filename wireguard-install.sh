@@ -196,7 +196,6 @@ EOF
         exit 1
     fi
 
-
     # Configure firewall (IPv4 only, simplified)
     if [[ "$firewall" == "firewalld" ]]; then
         systemctl enable --now firewalld
@@ -222,6 +221,9 @@ EOF
         echo "Error: Failed to activate wg0. Please check the configuration in /etc/wireguard/wg0.conf."
         exit 1
     fi
+
+    # Optionally enable the service to start on boot
+    systemctl enable wg-quick@wg0
 
     # Start WireGuard service
     systemctl enable --now wg-quick@wg0
