@@ -24,6 +24,23 @@ fi
 
 # Main installation logic
 if [[ ! -e /etc/wireguard/wg0.conf ]]; then
+    ### System Setup ###
+
+    # Package installation
+    echo "Installing WireGuard packages..."
+    if [[ "$os" == "ubuntu" ]]; then
+        apt-get update
+        apt-get install -y wireguard qrencode
+    elif [[ "$os" == "debian" ]]; then
+        apt-get update
+        apt-get install -y wireguard qrencode
+    elif [[ "$os" == "centos" || "$os" == "fedora" ]]; then
+        dnf install -y wireguard-tools qrencode
+    else
+        echo "Error: Unsupported OS."
+        exit 1
+    fi
+
     ### YAML-Based Initial Setup ###
 
     # Check for yq and install if not present
@@ -159,13 +176,12 @@ EOF
     echo
     echo "WireGuard installation is ready to begin."
 
-    ### System Setup ###
-
     # Firewall detection
     if ! systemctl is-active --quiet firewalld.service && ! hash iptables 2>/dev/null; then
         if [[ "$os" == "centos" || "$os" == "fedora" ]]; then
             firewall="firewalld"
             echo "firewalld, which is required to manage routing tables, will also be installed."
+            dnf install -y firewalld
         elif [[ "$os" == "debian" || "$os" == "ubuntu" ]]; then
             firewall="iptables"
         else
@@ -176,24 +192,6 @@ EOF
         firewall="firewalld"
     else
         firewall="iptables"
-    fi
-
-    # Package installation
-    echo "Installing WireGuard packages..."
-    if [[ "$os" == "ubuntu" ]]; then
-        apt-get update
-        apt-get install -y wireguard qrencode
-    elif [[ "$os" == "debian" ]]; then
-        apt-get update
-        apt-get install -y wireguard qrencode
-    elif [[ "$os" == "centos" || "$os" == "fedora" ]]; then
-        dnf install -y wireguard-tools qrencode
-        if [[ "$firewall" == "firewalld" ]]; then
-            dnf install -y firewalld
-        fi
-    else
-        echo "Error: Unsupported OS."
-        exit 1
     fi
 
     # Configure firewall (IPv4 only, simplified)
