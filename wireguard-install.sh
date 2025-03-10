@@ -285,69 +285,11 @@ else
 
     echo "WireGuard is already installed."
     echo "Select an option:"
-    echo "   1) Add a new client"
-    echo "   2) Remove an existing client"
-    echo "   3) Remove WireGuard"
-    echo "   4) Exit"
+    echo "   1) Remove WireGuard"
+    echo "   2) Exit"
     read -p "Option: " option
 
-    case $option in
         1)
-            read -p "Enter client name: " client_name
-            read -p "Enter DNS (e.g., 1.1.1.1): " client_dns
-            octet=$(awk '/AllowedIPs/ {split($3,a,"."); print a[4]}' /etc/wireguard/wg0.conf | sort -n | tail -n 1 | cut -d '/' -f 1)
-            if [[ -z "$octet" ]]; then octet=1; fi
-            octet=$((octet + 1))
-            client_ipv4="${base_ipv4}.${octet}/$server_ipv4_mask"
-            if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
-                client_ipv6="${base_ipv6}${octet}/$server_ipv6_mask"
-            fi
-
-            client_private_key=$(wg genkey)
-            client_public_key=$(echo "$client_private_key" | wg pubkey)
-            psk=$(wg genpsk)
-            server_public_key=$(wg show wg0 public-key)
-
-            # Append to wg0.conf
-            cat << EOF >> /etc/wireguard/wg0.conf
-
-# BEGIN_PEER $client_name
-[Peer]
-PublicKey = $client_public_key
-PresharedKey = $psk
-AllowedIPs = ${base_ipv4}.${octet}/32$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", ${base_ipv6}${octet}/128" )
-# END_PEER $client_name
-EOF
-
-            # Create client config
-            cat << EOF > ~/"${client_name}-wg0.conf"
-[Interface]
-Address = $client_ipv4$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", $client_ipv6" )
-DNS = $client_dns
-PrivateKey = $client_private_key
-
-[Peer]
-PublicKey = $server_public_key
-PresharedKey = $psk
-AllowedIPs = 0.0.0.0/0, ::/0
-Endpoint = $endpoint:$port
-PersistentKeepalive = 25
-EOF
-
-            systemctl restart wg-quick@wg0
-            qrencode -t ANSI256UTF8 < ~/"${client_name}-wg0.conf"
-            echo "Client configuration saved at: ~/${client_name}-wg0.conf"
-            ;;
-        2)
-            echo "Existing clients:"
-            grep -B 2 "END_PEER" /etc/wireguard/wg0.conf
-            read -p "Enter client name to remove: " client_name
-            sed -i "/# BEGIN_PEER $client_name/,/# END_PEER $client_name/d" /etc/wireguard/wg0.conf
-            rm -f ~/"${client_name}-wg0.conf"
-            systemctl restart wg-quick@wg0
-            echo "Client $client_name removed."
-            ;;
-        3)
             systemctl disable --now wg-quick@wg0
             rm -rf /etc/wireguard
             rm -f /usr/local/bin/boringtun
@@ -358,7 +300,7 @@ EOF
             fi
             echo "WireGuard removed."
             ;;
-        4)
+        2)
             exit 0
             ;;
         *)
