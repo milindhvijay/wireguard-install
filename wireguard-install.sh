@@ -196,17 +196,6 @@ EOF
         exit 1
     fi
 
-    # Activate the WireGuard interface explicitly
-    echo "Activating WireGuard interface..."
-    if wg-quick up wg0; then
-        echo "WireGuard interface wg0 is now active."
-    else
-        echo "Error: Failed to activate wg0. Please check the configuration in /etc/wireguard/wg0.conf."
-        exit 1
-    fi
-
-    # Optionally enable the service to start on boot
-    systemctl enable wg-quick@wg0
 
     # Configure firewall (IPv4 only, simplified)
     if [[ "$firewall" == "firewalld" ]]; then
@@ -224,6 +213,15 @@ EOF
     # Enable IP forwarding (IPv4 only)
     sysctl -w net.ipv4.ip_forward=1
     echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+
+    # Activate the WireGuard interface explicitly
+    echo "Activating WireGuard interface..."
+    if wg-quick up wg0; then
+        echo "WireGuard interface wg0 is now active."
+    else
+        echo "Error: Failed to activate wg0. Please check the configuration in /etc/wireguard/wg0.conf."
+        exit 1
+    fi
 
     # Start WireGuard service
     systemctl enable --now wg-quick@wg0
