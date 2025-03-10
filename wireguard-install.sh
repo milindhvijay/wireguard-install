@@ -4,7 +4,7 @@
 #
 # This script is a modified version of the original installer where
 # only the server and client parts are defined via YAML (/etc/wireguard/config.yaml).
-# The rest of the logic (OS detection, firewall / iptables rules, etc.) remains unchanged.
+# The rest of the logic (OS detection, firewall/iptables rules, etc.) remains.
 #
 # Make sure yq is installed for YAML parsing.
 
@@ -76,31 +76,16 @@ if ! systemd-detect-virt -cq; then
   # Not running inside a container: use kernel module
   use_boringtun="0"
 elif grep -q '^wireguard ' /proc/modules; then
-  # Inside a container but kernel WireGuard available
+  # Running in a container but kernel module available
   use_boringtun="0"
 else
-  # Inside a container without the WireGuard kernel module: use BoringTun
+  # In container without kernel module: use userspace BoringTun
   use_boringtun="1"
 fi
 
 if [[ "$EUID" -ne 0 ]]; then
   echo "This installer needs to be run as root."
   exit 1
-fi
-
-if [[ "$use_boringtun" -eq 1 ]]; then
-  if [ "$(uname -m)" != "x86_64" ]; then
-    echo "In containerized systems without the wireguard kernel module, this installer
-supports only the x86_64 architecture.
-The system runs on $(uname -m) and is unsupported."
-    exit 1
-  fi
-
-  if [[ ! -e /dev/net/tun ]] || ! ( exec 7<>/dev/net/tun ) 2>/dev/null; then
-    echo "The system does not have the TUN device available.
-TUN needs to be enabled before running this installer."
-    exit 1
-  fi
 fi
 
 # --- Main Installation Section ---
@@ -264,17 +249,27 @@ Environment=WG_SUDO=1
 EOF
   fi
 
-  # --- Firewall / iptables Setup ---
+  # --- Firewall / NAT Setup ---
   if systemctl is-active --quiet firewalld.service; then
     firewall="firewalld"
-    firewall-cmd --add-port="$SERVER_PORT"/udp
-    firewall-cmd --zone=trusted --add-source$(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24
-    firewall-cmd --permanent --add-port="$SERVER_PORT"/udp
-    firewall-cmd --permanent --zone=trusted --add-source$(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24
+    # Open the WireGuard UDP port
+    firewall-cmd --add-port="${SERVER_PORT}"/udp
+    firewall-cmd --permanent --add-port="${SERVER_PORT}"/udp
+
+    # Add the VPN subnet as a trusted zone.
+    IPV4_SUBNET="$(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24"
+    firewall-cmd --zone=trusted --add-source="${IPV4_SUBNET}"
+    firewall-cmd --permanent --zone=trusted --add-source="${IPV4_SUBNET}"
+
+    # Set NAT for the VPN subnet using direct rules
+    NAT_IP=$(ip route get 1.1.1.1 | awk '{print $NF; exit}')
+    firewall-cmd --direct --add-rule ipv4 nat POSTROUTING 0 -s "${IPV4_SUBNET}" ! -d "${IPV4_SUBNET}" -j SNAT --to "${NAT_IP}"
+    firewall-cmd --permanent --direct --add-rule ipv4 nat POSTROUTING 0 -s "${IPV4_SUBNET}" ! -d "${IPV4_SUBNET}" -j SNAT --to "${NAT_IP}"
     if [ "$IPV6_ENABLED" = "true" ]; then
       IPV6_PREFIX=$(echo "$IPV6_ADDRESS" | cut -d'/' -f1)
       firewall-cmd --zone=trusted --add-source="${IPV6_PREFIX}/64"
       firewall-cmd --permanent --zone=trusted --add-source="${IPV6_PREFIX}/64"
+      # (IPv6 NAT is not always used; adjust if needed.)
     fi
   else
     iptables_path=$(command -v iptables)
@@ -284,13 +279,13 @@ EOF
 Before=network.target
 [Service]
 Type=oneshot
-ExecStart=$iptables_path -t nat -A POSTROUTING -s $(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24 ! -d $(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24 -j SNAT --to $(ip route get 1.1.1.1 | awk '{print $NF; exit}')
+ExecStart=$iptables_path -t nat -A POSTROUTING -s "$(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24" ! -d "$(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24" -j SNAT --to $(ip route get 1.1.1.1 | awk '{print $NF; exit}')
 ExecStart=$iptables_path -I INPUT -p udp --dport $SERVER_PORT -j ACCEPT
-ExecStart=$iptables_path -I FORWARD -s $(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24 -j ACCEPT
+ExecStart=$iptables_path -I FORWARD -s "$(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24" -j ACCEPT
 ExecStart=$iptables_path -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
-ExecStop=$iptables_path -t nat -D POSTROUTING -s $(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24 ! -d $(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24 -j SNAT --to $(ip route get 1.1.1.1 | awk '{print $NF; exit}')
+ExecStop=$iptables_path -t nat -D POSTROUTING -s "$(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24" ! -d "$(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24" -j SNAT --to $(ip route get 1.1.1.1 | awk '{print $NF; exit}')
 ExecStop=$iptables_path -D INPUT -p udp --dport $SERVER_PORT -j ACCEPT
-ExecStop=$iptables_path -D FORWARD -s $(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24 -j ACCEPT
+ExecStop=$iptables_path -D FORWARD -s "$(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24" -j ACCEPT
 ExecStop=$iptables_path -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
 RemainAfterExit=yes
 [Install]
