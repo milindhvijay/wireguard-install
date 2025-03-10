@@ -207,9 +207,11 @@ EOF
         iptables -t nat -A POSTROUTING -s "$vpn_ipv4_subnet" -o eth0 -j MASQUERADE
     fi
 
-    # Enable IP forwarding (IPv4 only)
+    # Enable IP forwarding (IPv4 and IPv6)
     sysctl -w net.ipv4.ip_forward=1
+    sysctl -w net.ipv6.conf.all.forwarding=1
     echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+    echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
 
     # Activate the WireGuard interface explicitly
     echo "Activating WireGuard interface..."
