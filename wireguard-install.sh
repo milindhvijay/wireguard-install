@@ -159,18 +159,6 @@ EOF
         sed -i "s/Endpoint = \[to be set\]:$port/Endpoint = $endpoint:$port/" "$client_conf"
     done
 
-    # Activate the WireGuard interface explicitly
-    echo "Activating WireGuard interface..."
-    if wg-quick up wg0; then
-        echo "WireGuard interface wg0 is now active."
-    else
-        echo "Error: Failed to activate wg0. Please check the configuration in /etc/wireguard/wg0.conf."
-        exit 1
-    fi
-
-    # Optionally enable the service to start on boot
-    systemctl enable wg-quick@wg0
-
     # Set VPN subnets for firewall rules
     if [[ "$ipv4_enabled" == "true" ]]; then
         vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
@@ -301,6 +289,7 @@ else
     echo "   2) Exit"
     read -p "Option: " option
 
+    case $option in
         1)
             systemctl disable --now wg-quick@wg0
             rm -rf /etc/wireguard
