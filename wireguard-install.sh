@@ -261,38 +261,46 @@ EOF
     firewall-cmd --zone=trusted --add-source="${IPV4_SUBNET}"
     firewall-cmd --permanent --zone=trusted --add-source="${IPV4_SUBNET}"
 
-    # Set NAT for the VPN subnet using direct rules
-    NAT_IP=$(ip route get 1.1.1.1 | awk '{print $NF; exit}')
-    firewall-cmd --direct --add-rule ipv4 nat POSTROUTING 0 -s "${IPV4_SUBNET}" ! -d "${IPV4_SUBNET}" -j SNAT --to "${NAT_IP}"
-    firewall-cmd --permanent --direct --add-rule ipv4 nat POSTROUTING 0 -s "${IPV4_SUBNET}" ! -d "${IPV4_SUBNET}" -j SNAT --to "${NAT_IP}"
+    # Use MASQUERADE for NAT rather than SNAT with a fixed address.
+    firewall-cmd --direct --add-rule ipv4 nat POSTROUTING 0 -s "${IPV4_SUBNET}" \
+      ! -d "${IPV4_SUBNET}" -j MASQUERADE
+    firewall-cmd --permanent --direct --add-rule ipv4 nat POSTROUTING 0 -s "${IPV4_SUBNET}" \
+      ! -d "${IPV4_SUBNET}" -j MASQUERADE
+
     if [ "$IPV6_ENABLED" = "true" ]; then
       IPV6_PREFIX=$(echo "$IPV6_ADDRESS" | cut -d'/' -f1)
+      # For IPv6, masquerading rules are less common—you may need to adjust according to your network.
       firewall-cmd --zone=trusted --add-source="${IPV6_PREFIX}/64"
       firewall-cmd --permanent --zone=trusted --add-source="${IPV6_PREFIX}/64"
-      # (IPv6 NAT is not always used; adjust if needed.)
+      # Note: IPv6 NAT (NPTv6 or other) is not automatically handled by firewalld MASQUERADE.
     fi
+
   else
     iptables_path=$(command -v iptables)
     ip6tables_path=$(command -v ip6tables)
     cat << EOF > /etc/systemd/system/wg-iptables.service
-[Unit]
-Before=network.target
-[Service]
-Type=oneshot
-ExecStart=$iptables_path -t nat -A POSTROUTING -s "$(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24" ! -d "$(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24" -j SNAT --to $(ip route get 1.1.1.1 | awk '{print $NF; exit}')
-ExecStart=$iptables_path -I INPUT -p udp --dport $SERVER_PORT -j ACCEPT
-ExecStart=$iptables_path -I FORWARD -s "$(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24" -j ACCEPT
-ExecStart=$iptables_path -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
-ExecStop=$iptables_path -t nat -D POSTROUTING -s "$(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24" ! -d "$(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24" -j SNAT --to $(ip route get 1.1.1.1 | awk '{print $NF; exit}')
-ExecStop=$iptables_path -D INPUT -p udp --dport $SERVER_PORT -j ACCEPT
-ExecStop=$iptables_path -D FORWARD -s "$(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24" -j ACCEPT
-ExecStop=$iptables_path -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
-RemainAfterExit=yes
-[Install]
-WantedBy=multi-user.target
-EOF
+  [Unit]
+  Before=network.target
+  [Service]
+  Type=oneshot
+  # Use MASQUERADE for outbound NAT: this automatically uses the correct egress IP.
+  ExecStart=$iptables_path -t nat -A POSTROUTING -s "$(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24" \
+    ! -d "$(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24" -j MASQUERADE
+  ExecStart=$iptables_path -I INPUT -p udp --dport $SERVER_PORT -j ACCEPT
+  ExecStart=$iptables_path -I FORWARD -s "$(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24" -j ACCEPT
+  ExecStart=$iptables_path -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
+  ExecStop=$iptables_path -t nat -D POSTROUTING -s "$(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24" \
+    ! -d "$(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24" -j MASQUERADE
+  ExecStop=$iptables_path -D INPUT -p udp --dport $SERVER_PORT -j ACCEPT
+  ExecStop=$iptables_path -D FORWARD -s "$(echo "$IPV4_ADDRESS" | cut -d'/' -f1)/24" -j ACCEPT
+  ExecStop=$iptables_path -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
+  RemainAfterExit=yes
+  [Install]
+  WantedBy=multi-user.target
+  EOF
     systemctl enable --now wg-iptables.service
   fi
+
 
   # --- Enable the WireGuard Service ---
   systemctl enable --now wg-quick@wg0.service
