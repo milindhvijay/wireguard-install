@@ -26,10 +26,15 @@ fi
 if [[ ! -e /etc/wireguard/wg0.conf ]]; then
     ### YAML-Based Initial Setup ###
 
-    # Check for yq
+    # Check for yq and install if not present
     if ! command -v yq &>/dev/null; then
-        echo "Error: 'yq' is required to parse the YAML configuration. Please install it."
-        exit 1
+        echo "'yq' not found, installing it automatically..."
+        wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq &&\
+        chmod +x /usr/bin/yq
+        if ! command -v yq &>/dev/null; then
+            echo "Error: Failed to install 'yq'. Please install it manually."
+            exit 1
+        fi
     fi
 
     # Check for config.yaml
