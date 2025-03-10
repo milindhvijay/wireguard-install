@@ -151,18 +151,6 @@ EOF
         sed -i "s/Endpoint = \[to be set\]:$port/Endpoint = $endpoint:$port/" "$client_conf"
     done
 
-    # Activate the WireGuard interface explicitly
-    echo "Activating WireGuard interface..."
-    if wg-quick up wg0; then
-        echo "WireGuard interface wg0 is now active."
-    else
-        echo "Error: Failed to activate wg0. Please check the configuration in /etc/wireguard/wg0.conf."
-        exit 1
-    fi
-
-    # Optionally enable the service to start on boot
-    systemctl enable wg-quick@wg0
-
     # Set VPN subnets (for IPv4 only, skipping IPv6 to avoid ip6tables issue)
     if [[ "$ipv4_enabled" == "true" ]]; then
         vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
@@ -207,6 +195,18 @@ EOF
         echo "Error: Unsupported OS."
         exit 1
     fi
+
+    # Activate the WireGuard interface explicitly
+    echo "Activating WireGuard interface..."
+    if wg-quick up wg0; then
+        echo "WireGuard interface wg0 is now active."
+    else
+        echo "Error: Failed to activate wg0. Please check the configuration in /etc/wireguard/wg0.conf."
+        exit 1
+    fi
+
+    # Optionally enable the service to start on boot
+    systemctl enable wg-quick@wg0
 
     # Configure firewall (IPv4 only, simplified)
     if [[ "$firewall" == "firewalld" ]]; then
