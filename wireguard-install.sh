@@ -143,6 +143,9 @@ PersistentKeepalive = $client_persistent_keepalive
 EOF
     done
 
+    # Set secure permissions for wg0.conf
+    chmod 600 /etc/wireguard/wg0.conf
+
     # Detect public endpoint
     if [[ -n "$public_endpoint" && "$public_endpoint" != "null" ]]; then
         endpoint="$public_endpoint"
