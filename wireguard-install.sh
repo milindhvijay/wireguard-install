@@ -51,14 +51,8 @@ if [[ ! -e /etc/wireguard/wg0.conf ]]; then
     server_ipv6=$(yq e '.server.ipv6.address' config.yaml)
     server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
     server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
-
-    # Validate IPv6 mask if IPv6 is enabled
-    if [[ "$ipv6_enabled" == "true" ]]; then
-        if ! [[ "$server_ipv6_mask" =~ ^[0-9]+$ ]] || [ "$server_ipv6_mask" -lt 1 ] || [ "$server_ipv6_mask" -gt 128 ]; then
-            echo "Error: Invalid IPv6 prefix length in config.yaml: $server_ipv6_mask"
-            exit 1
-        fi
-    fi
+    vpn_ipv6_subnet="${server_ipv6_ip}/${server_ipv6_mask}"
+    base_ipv6=$(echo "$server_ipv6_ip" | sed 's/::[0-9]*$/::/')
 
     # Generate server keys
     mkdir -p /etc/wireguard
@@ -164,12 +158,9 @@ EOF
     # Optionally enable the service to start on boot
     systemctl enable wg-quick@wg0
 
-    # Set VPN subnets for firewall rules
+    # Set VPN subnets (for IPv4 only, skipping IPv6 to avoid ip6tables issue)
     if [[ "$ipv4_enabled" == "true" ]]; then
         vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
-    fi
-    if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
-        vpn_ipv6_subnet="${server_ipv6_ip}/${server_ipv6_mask}"
     fi
 
     echo
@@ -212,46 +203,22 @@ EOF
         exit 1
     fi
 
-    # Configure firewall
+    # Configure firewall (IPv4 only, simplified)
     if [[ "$firewall" == "firewalld" ]]; then
         systemctl enable --now firewalld
         firewall-cmd --permanent --add-port="$port"/udp
         firewall-cmd --permanent --zone=trusted --add-source="$vpn_ipv4_subnet"
-        if [[ -n "$vpn_ipv6_subnet" ]]; then
-            firewall-cmd --permanent --zone=trusted --add-source="$vpn_ipv6_subnet"
-        fi
         firewall-cmd --permanent --add-masquerade
         firewall-cmd --reload
     else
         iptables -A INPUT -p udp --dport "$port" -j ACCEPT
         iptables -A FORWARD -s "$vpn_ipv4_subnet" -j ACCEPT
-        if [[ -n "$vpn_ipv6_subnet" ]]; then
-            ip6tables -A FORWARD -s "$vpn_ipv6_subnet" -j ACCEPT
-        fi
         iptables -t nat -A POSTROUTING -s "$vpn_ipv4_subnet" -o eth0 -j MASQUERADE
-        if [[ -n "$vpn_ipv6_subnet" ]]; then
-            ip6tables -t nat -A POSTROUTING -s "$vpn_ipv6_subnet" -o eth0 -j MASQUERADE
-        fi
-
-        # Create directory for iptables rules if it doesn't exist
-        mkdir -p /etc/iptables
-
-        # Save the rules
-        iptables-save > /etc/iptables/rules.v4
-        if [[ -n "$vpn_ipv6_subnet" ]]; then
-            ip6tables-save > /etc/iptables/rules.v6
-        fi
     fi
 
-    # Enable IP forwarding
+    # Enable IP forwarding (IPv4 only)
     sysctl -w net.ipv4.ip_forward=1
-    if [[ -n "$vpn_ipv6_subnet" ]]; then
-        sysctl -w net.ipv6.conf.all.forwarding=1
-    fi
     echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-    if [[ -n "$vpn_ipv6_subnet" ]]; then
-        echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
-    fi
 
     # Start WireGuard service
     systemctl enable --now wg-quick@wg0
