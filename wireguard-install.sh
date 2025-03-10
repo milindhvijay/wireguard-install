@@ -22,25 +22,6 @@ else
     exit 1
 fi
 
-# Function to detect virtualization/container environment
-check_virt() {
-    if systemd-detect-virt --container &>/dev/null; then
-        echo "container"
-    elif systemd-detect-virt --vm &>/dev/null; then
-        echo "vm"
-    else
-        echo "bare-metal"
-    fi
-}
-
-# Determine if BoringTun should be used
-virt=$(check_virt)
-if [[ "$virt" == "container" || ! -f /sys/module/wireguard ]]; then
-    use_boringtun="true"
-else
-    use_boringtun="false"
-fi
-
 # Main installation logic
 if [[ ! -e /etc/wireguard/wg0.conf ]]; then
     ### YAML-Based Initial Setup ###
@@ -90,7 +71,7 @@ ListenPort = $port
 $( [[ "$mtu" != "null" && -n "$mtu" ]] && echo "MTU = $mtu" )
 EOF
 
-    # Generate client configurations
+# Generate client configurations
     number_of_clients=$(yq e '.clients | length' config.yaml)
     if [[ $number_of_clients -gt 253 ]]; then
         echo "Warning: Number of clients exceeds 253, which may exceed the /24 subnet limit."
@@ -141,7 +122,6 @@ AllowedIPs = $client_allowed_ips
 Endpoint = [to be set]:$port
 PersistentKeepalive = $client_persistent_keepalive
 EOF
-
         # Set secure permissions for client configuration file
         chmod 600 ~/"${client_name}-wg0.conf"
     done
@@ -189,7 +169,7 @@ EOF
     echo
     echo "WireGuard installation is ready to begin."
 
-    ### System Setup (Adapted from Original Script) ###
+    ### System Setup ###
 
     # Firewall detection
     if ! systemctl is-active --quiet firewalld.service && ! hash iptables 2>/dev/null; then
@@ -213,27 +193,13 @@ EOF
     if [[ "$os" == "ubuntu" ]]; then
         apt-get update
         apt-get install -y wireguard qrencode
-        if [[ "$use_boringtun" == "true" ]]; then
-            apt-get install -y wireguard-tools
-            wget -O /usr/local/bin/boringtun https://github.com/cloudflare/boringtun/releases/latest/download/boringtun
-            chmod +x /usr/local/bin/boringtun
-        fi
     elif [[ "$os" == "debian" ]]; then
         apt-get update
         apt-get install -y wireguard qrencode
-        if [[ "$use_boringtun" == "true" ]]; then
-            apt-get install -y wireguard-tools
-            wget -O /usr/local/bin/boringtun https://github.com/cloudflare/boringtun/releases/latest/download/boringtun
-            chmod +x /usr/local/bin/boringtun
-        fi
     elif [[ "$os" == "centos" || "$os" == "fedora" ]]; then
         dnf install -y wireguard-tools qrencode
         if [[ "$firewall" == "firewalld" ]]; then
             dnf install -y firewalld
-        fi
-        if [[ "$use_boringtun" == "true" ]]; then
-            wget -O /usr/local/bin/boringtun https://github.com/cloudflare/boringtun/releases/latest/download/boringtun
-            chmod +x /usr/local/bin/boringtun
         fi
     else
         echo "Error: Unsupported OS."
@@ -278,16 +244,6 @@ EOF
     fi
 
     # Start WireGuard service
-    if [[ "$use_boringtun" == "true" ]]; then
-        mkdir -p /etc/systemd/system/wg-quick@wg0.service.d
-        cat << EOF > /etc/systemd/system/wg-quick@wg0.service.d/override.conf
-[Service]
-ExecStart=
-ExecStart=/usr/local/bin/boringtun wg0
-ExecStart=/usr/bin/wg-quick up wg0
-EOF
-        systemctl daemon-reload
-    fi
     systemctl enable --now wg-quick@wg0
 
     # Display client QR codes
@@ -299,7 +255,7 @@ EOF
     done
 
 else
-    ### Management Menu (Adapted from Original Script) ###
+    ### Management Menu ###
 
     echo "WireGuard is already installed."
     echo "Select an option:"
@@ -311,7 +267,6 @@ else
         1)
             systemctl disable --now wg-quick@wg0
             rm -rf /etc/wireguard
-            rm -f /usr/local/bin/boringtun
             if [[ "$os" == "ubuntu" || "$os" == "debian" ]]; then
                 apt-get remove -y wireguard wireguard-tools
             elif [[ "$os" == "centos" || "$os" == "fedora" ]]; then
