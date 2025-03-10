@@ -141,6 +141,9 @@ AllowedIPs = $client_allowed_ips
 Endpoint = [to be set]:$port
 PersistentKeepalive = $client_persistent_keepalive
 EOF
+
+        # Set secure permissions for client configuration file
+        chmod 600 ~/"${client_name}-wg0.conf"
     done
 
     # Set secure permissions for wg0.conf
