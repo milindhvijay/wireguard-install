@@ -33,12 +33,14 @@ generate_full_configs() {
     server_ipv4_ip=$(echo "$server_ipv4" | cut -d '/' -f 1)
     server_ipv4_mask=$(echo "$server_ipv4" | cut -d '/' -f 2)
     base_ipv4=$(echo "$server_ipv4_ip" | cut -d '.' -f 1-3)
+    server_ipv4_last_octet=$(echo "$server_ipv4_ip" | cut -d '.' -f 4)
     ipv6_enabled=$(yq e '.server.ipv6.enabled' config.yaml)
     server_ipv6=$(yq e '.server.ipv6.address' config.yaml)
     server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
     server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
     vpn_ipv6_subnet="${server_ipv6_ip}/${server_ipv6_mask}"
-    base_ipv6=$(echo "$server_ipv6_ip" | sed 's/::[0-9]*$/::/')
+    base_ipv6=$(echo "$server_ipv6_ip" | sed 's/:[0-9a-f]*$//')
+    server_ipv6_last_segment=$(echo "$server_ipv6_ip" | grep -o '[0-9a-f]*$')
 
     # Generate server keys
     server_private_key=$(wg genkey)
@@ -70,11 +72,12 @@ EOF
         client_allowed_ips=$(yq e ".clients[$i].allowed_ips" config.yaml)
         client_persistent_keepalive=$(yq e ".clients[$i].persistent_keepalive" config.yaml)
 
-        # Calculate client IPs (assuming server is .1, clients start at .2)
-        octet=$((i + 2))
+        # Calculate client IPs relative to server IP
+        octet=$((server_ipv4_last_octet + i + 1))
         client_ipv4="${base_ipv4}.${octet}/$server_ipv4_mask"
         if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
-            client_ipv6="${base_ipv6}${octet}/$server_ipv6_mask"
+            client_ipv6_last_segment=$(printf "%x" $((16#$server_ipv6_last_segment + i + 1)))
+            client_ipv6="${base_ipv6}:${client_ipv6_last_segment}/$server_ipv6_mask"
         fi
 
         # Generate client keys
@@ -89,7 +92,7 @@ EOF
 [Peer]
 PublicKey = $client_public_key
 PresharedKey = $psk
-AllowedIPs = ${base_ipv4}.${octet}/32$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", ${base_ipv6}${octet}/128" )
+AllowedIPs = ${base_ipv4}.${octet}/32$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", ${base_ipv6}:${client_ipv6_last_segment}/128" )
 # END_PEER $client_name
 EOF
 
@@ -147,11 +150,13 @@ generate_client_configs() {
     server_ipv4_ip=$(echo "$server_ipv4" | cut -d '/' -f 1)
     server_ipv4_mask=$(echo "$server_ipv4" | cut -d '/' -f 2)
     base_ipv4=$(echo "$server_ipv4_ip" | cut -d '.' -f 1-3)
+    server_ipv4_last_octet=$(echo "$server_ipv4_ip" | cut -d '.' -f 4)
     ipv6_enabled=$(yq e '.server.ipv6.enabled' config.yaml)
     server_ipv6=$(yq e '.server.ipv6.address' config.yaml)
     server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
     server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
-    base_ipv6=$(echo "$server_ipv6_ip" | sed 's/::[0-9]*$/::/')
+    base_ipv6=$(echo "$server_ipv6_ip" | sed 's/:[0-9a-f]*$//')
+    server_ipv6_last_segment=$(echo "$server_ipv6_ip" | grep -o '[0-9a-f]*$')
     server_public_key=$(wg show wg0 public-key)
 
     # Detect public endpoint, preferring IPv6
@@ -180,11 +185,12 @@ generate_client_configs() {
         client_allowed_ips=$(yq e ".clients[$i].allowed_ips" config.yaml)
         client_persistent_keepalive=$(yq e ".clients[$i].persistent_keepalive" config.yaml)
 
-        # Calculate client IPs
-        octet=$((i + 2))
+        # Calculate client IPs relative to server IP
+        octet=$((server_ipv4_last_octet + i + 1))
         client_ipv4="${base_ipv4}.${octet}/$server_ipv4_mask"
         if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
-            client_ipv6="${base_ipv6}${octet}/$server_ipv6_mask"
+            client_ipv6_last_segment=$(printf "%x" $((16#$server_ipv6_last_segment + i + 1)))
+            client_ipv6="${base_ipv6}:${client_ipv6_last_segment}/$server_ipv6_mask"
         fi
 
         # Generate client keys
@@ -209,7 +215,7 @@ generate_client_configs() {
 [Peer]
 PublicKey = $client_public_key
 PresharedKey = $psk
-AllowedIPs = ${base_ipv4}.${octet}/32$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", ${base_ipv6}${octet}/128" )
+AllowedIPs = ${base_ipv4}.${octet}/32$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", ${base_ipv6}:${client_ipv6_last_segment}/128" )
 # END_PEER $client_name
 EOF
 
