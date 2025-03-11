@@ -114,14 +114,21 @@ EOF
     # Set secure permissions for wg0.conf
     chmod 600 /etc/wireguard/wg0.conf
 
-    # Detect public endpoint
+    # Detect public endpoint, preferring IPv6
     if [[ -n "$public_endpoint" && "$public_endpoint" != "null" ]]; then
         endpoint="$public_endpoint"
     else
-        endpoint=$(wget -qO- http://ip1.dynupdate.no-ip.com/ || curl -s http://ip1.dynupdate.no-ip.com/)
-        if [[ -z "$endpoint" ]]; then
-            echo "Error: Could not auto-detect public IP."
-            return 1
+        # Check for global IPv6 address
+        endpoint=$(ip -6 addr show scope global | grep -oP 'inet6 \K[0-9a-f:]+' | head -n 1)
+        if [[ -n "$endpoint" ]]; then
+            endpoint="[$endpoint]" # Wrap IPv6 in brackets for WireGuard
+        else
+            # Fall back to IPv4
+            endpoint=$(wget -qO- http://ip1.dynupdate.no-ip.com/ || curl -s http://ip1.dynupdate.no-ip.com/)
+            if [[ -z "$endpoint" ]]; then
+                echo "Error: Could not auto-detect public IP (neither IPv6 nor IPv4)."
+                return 1
+            fi
         fi
     fi
 
@@ -147,15 +154,22 @@ generate_client_configs() {
     base_ipv6=$(echo "$server_ipv6_ip" | sed 's/::[0-9]*$/::/')
     server_public_key=$(wg show wg0 public-key)
 
-    # Detect public endpoint
+    # Detect public endpoint, preferring IPv6
     public_endpoint=$(yq e '.server.public_endpoint' config.yaml)
     if [[ -n "$public_endpoint" && "$public_endpoint" != "null" ]]; then
         endpoint="$public_endpoint"
     else
-        endpoint=$(wget -qO- http://ip1.dynupdate.no-ip.com/ || curl -s http://ip1.dynupdate.no-ip.com/)
-        if [[ -z "$endpoint" ]]; then
-            echo "Error: Could not auto-detect public IP."
-            return 1
+        # Check for global IPv6 address
+        endpoint=$(ip -6 addr show scope global | grep -oP 'inet6 \K[0-9a-f:]+' | head -n 1)
+        if [[ -n "$endpoint" ]]; then
+            endpoint="[$endpoint]" # Wrap IPv6 in brackets for WireGuard
+        else
+            # Fall back to IPv4
+            endpoint=$(wget -qO- http://ip1.dynupdate.no-ip.com/ || curl -s http://ip1.dynupdate.no-ip.com/)
+            if [[ -z "$endpoint" ]]; then
+                echo "Error: Could not auto-detect public IP (neither IPv6 nor IPv4)."
+                return 1
+            fi
         fi
     fi
 
@@ -312,7 +326,7 @@ if [[ ! -e /etc/wireguard/wg0.conf ]]; then
     echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
     echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
 
- SIT    # Start WireGuard service
+    # Start WireGuard service
     echo "Activating WireGuard interface..."
     if systemctl enable --now wg-quick@wg0; then
         echo "WireGuard interface wg0 is now active."
@@ -389,7 +403,6 @@ else
                         if [[ "$new_name" != "$old_name" ]] || ! cmp -s <(yq e ".clients[$i]" config.yaml) <(yq e ".clients[$i]" /etc/wireguard/config.yaml.backup); then
                             changed_clients+=("$i")
                         fi
-
                     done
 
                     if [[ ${#changed_clients[@]} -gt 0 ]]; then
