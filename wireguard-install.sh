@@ -22,44 +22,8 @@ else
     exit 1
 fi
 
-# Main installation logic
-if [[ ! -e /etc/wireguard/wg0.conf ]]; then
-    ### System Setup ###
-
-    # Package installation
-    echo "Installing WireGuard packages..."
-    if [[ "$os" == "ubuntu" ]]; then
-        apt-get update
-        apt-get install -y wireguard qrencode
-    elif [[ "$os" == "debian" ]]; then
-        apt-get update
-        apt-get install -y wireguard qrencode
-    elif [[ "$os" == "centos" || "$os" == "fedora" ]]; then
-        dnf install -y wireguard-tools qrencode
-    else
-        echo "Error: Unsupported OS."
-        exit 1
-    fi
-
-    ### YAML-Based Initial Setup ###
-
-    # Check for yq and install if not present
-    if ! command -v yq &>/dev/null; then
-        echo "'yq' not found, installing it automatically..."
-        wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq &&\
-        chmod +x /usr/bin/yq
-        if ! command -v yq &>/dev/null; then
-            echo "Error: Failed to install 'yq'. Please install it manually."
-            exit 1
-        fi
-    fi
-
-    # Check for config.yaml
-    if [[ ! -f config.yaml ]]; then
-        echo "Error: 'config.yaml' not found in the current directory."
-        exit 1
-    fi
-
+# Function to generate server and client configurations from YAML
+generate_configs() {
     # Parse server configuration from YAML
     port=$(yq e '.server.port' config.yaml)
     mtu=$(yq e '.server.mtu' config.yaml)
@@ -77,7 +41,6 @@ if [[ ! -e /etc/wireguard/wg0.conf ]]; then
     base_ipv6=$(echo "$server_ipv6_ip" | sed 's/::[0-9]*$/::/')
 
     # Generate server keys
-    mkdir -p /etc/wireguard
     server_private_key=$(wg genkey)
     server_public_key=$(echo "$server_private_key" | wg pubkey)
 
@@ -159,7 +122,7 @@ EOF
         endpoint=$(wget -qO- http://ip1.dynupdate.no-ip.com/ || curl -s http://ip1.dynupdate.no-ip.com/)
         if [[ -z "$endpoint" ]]; then
             echo "Error: Could not auto-detect public IP."
-            exit 1
+            return 1
         fi
     fi
 
@@ -167,6 +130,56 @@ EOF
     for client_conf in ~/*-wg0.conf; do
         sed -i "s/Endpoint = \[to be set\]:$port/Endpoint = $endpoint:$port/" "$client_conf"
     done
+}
+
+# Main installation logic
+if [[ ! -e /etc/wireguard/wg0.conf ]]; then
+    ### System Setup ###
+
+    # Package installation
+    echo "Installing WireGuard packages..."
+    if [[ "$os" == "ubuntu" ]]; then
+        apt-get update
+        apt-get install -y wireguard qrencode
+    elif [[ "$os" == "debian" ]]; then
+        apt-get update
+        apt-get install -y wireguard qrencode
+    elif [[ "$os" == "centos" || "$os" == "fedora" ]]; then
+        dnf install -y wireguard-tools qrencode
+    else
+        echo "Error: Unsupported OS."
+        exit 1
+    fi
+
+    ### YAML-Based Initial Setup ###
+
+    # Check for yq and install if not present
+    if ! command -v yq &>/dev/null; then
+        echo "'yq' not found, installing it automatically..."
+        wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq &&\
+        chmod +x /usr/bin/yq
+        if ! command -v yq &>/dev/null; then
+            echo "Error: Failed to install 'yq'. Please install it manually."
+            exit 1
+        fi
+    fi
+
+    # Check for config.yaml
+    if [[ ! -f config.yaml ]]; then
+        echo "Error: 'config.yaml' not found in the current directory."
+        exit 1
+    fi
+
+    # Save a backup of config.yaml for later comparison
+    mkdir -p /etc/wireguard
+    cp config.yaml /etc/wireguard/config.yaml.backup
+    chmod 600 /etc/wireguard/config.yaml.backup
+
+    # Generate configurations
+    if ! generate_configs; then
+        echo "Error: Failed to generate configurations."
+        exit 1
+    fi
 
     # Set VPN subnets (for IPv4 only, skipping IPv6 to avoid ip6tables issue)
     if [[ "$ipv4_enabled" == "true" ]]; then
@@ -236,11 +249,57 @@ else
     echo "WireGuard is already installed."
     echo "Select an option:"
     echo "   1) Remove WireGuard"
-    echo "   2) Exit"
+    echo "   2) Re-create server and client configurations from YAML"
+    echo "   3) Exit"
     read -p "Option: " option
 
     case $option in
+
         1)
+            # Check for config.yaml
+            if [[ ! -f config.yaml ]]; then
+                echo "Error: 'config.yaml' not found in the current directory."
+                exit 1
+            fi
+
+            # Compare with previous YAML backup
+            if [[ -f /etc/wireguard/config.yaml.backup ]]; then
+                if cmp -s config.yaml /etc/wireguard/config.yaml.backup; then
+                    echo "No changes detected in config.yaml. No action taken."
+                    exit 0
+                fi
+            fi
+
+            # If different or no backup, proceed with regeneration
+            echo "Regenerating configurations from config.yaml..."
+            if ! generate_configs; then
+                echo "Error: Failed to regenerate configurations."
+                exit 1
+            fi
+
+            # Update the backup YAML
+            cp config.yaml /etc/wireguard/config.yaml.backup
+            chmod 600 /etc/wireguard/config.yaml.backup
+
+            # Restart WireGuard service to apply new configuration
+            echo "Restarting WireGuard service..."
+            if systemctl restart wg-quick@wg0; then
+                echo "WireGuard configurations updated and service restarted."
+            else
+                echo "Error: Failed to restart wg0. Please check the configuration in /etc/wireguard/wg0.conf."
+                exit 1
+            fi
+
+            # Display client QR codes
+            echo "Updated client configurations:"
+            for client_conf in ~/*-wg0.conf; do
+                echo -e "\nClient: $(basename "$client_conf")"
+                qrencode -t ANSI256UTF8 < "$client_conf"
+                echo "Configuration file saved at: $client_conf"
+            done
+            ;;
+
+        2)
             systemctl disable --now wg-quick@wg0
             rm -rf /etc/wireguard
             if [[ "$os" == "ubuntu" || "$os" == "debian" ]]; then
@@ -250,7 +309,8 @@ else
             fi
             echo "WireGuard removed."
             ;;
-        2)
+
+        3)
             exit 0
             ;;
         *)
