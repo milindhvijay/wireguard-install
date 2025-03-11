@@ -99,7 +99,7 @@ EOF
 Address = $client_ipv4$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", $client_ipv6" )
 DNS = $client_dns
 PrivateKey = $client_private_key
-$( [[ "$client_mtu" != "null" && -n "$client_mtu" ]] && echo "MTU = $client_mtu" )
+$( [[ "$client_mtu" != "null" && -n "$mtu" ]] && echo "MTU = $client_mtu" )
 
 [Peer]
 PublicKey = $server_public_key
@@ -178,8 +178,15 @@ generate_client_configs() {
         client_public_key=$(echo "$client_private_key" | wg pubkey)
         psk=$(wg genpsk)
 
-        # Remove old peer section from wg0.conf
-        sed -i "/# BEGIN_PEER $client_name/,/# END_PEER $client_name/d" /etc/wireguard/wg0.conf
+        # Remove old peer section from wg0.conf based on name (if it exists)
+        old_name=$(yq e ".clients[$i].name" /etc/wireguard/config.yaml.backup)
+        if [[ "$old_name" != "$client_name" && -n "$old_name" ]]; then
+            sed -i "/# BEGIN_PEER $old_name/,/# END_PEER $old_name/d" /etc/wireguard/wg0.conf
+            rm -f ~/"${old_name}-wg0.conf"
+            echo "Removed old client configuration for '$old_name'."
+        else
+            sed -i "/# BEGIN_PEER $client_name/,/# END_PEER $client_name/d" /etc/wireguard/wg0.conf
+        fi
 
         # Append updated client to wg0.conf
         cat << EOF >> /etc/wireguard/wg0.conf
@@ -305,7 +312,7 @@ if [[ ! -e /etc/wireguard/wg0.conf ]]; then
     echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
     echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
 
-    # Start WireGuard service
+ SIT    # Start WireGuard service
     echo "Activating WireGuard interface..."
     if systemctl enable --now wg-quick@wg0; then
         echo "WireGuard interface wg0 is now active."
@@ -359,6 +366,14 @@ else
                     fi
                     cp config.yaml /etc/wireguard/config.yaml.backup
                     chmod 600 /etc/wireguard/config.yaml.backup
+
+                    # Display all client QR codes
+                    echo "Updated client configurations:"
+                    for client_conf in ~/*-wg0.conf; do
+                        echo -e "\nClient: $(basename "$client_conf")"
+                        qrencode -t ANSI256UTF8 < "$client_conf"
+                        echo "Configuration file saved at: $client_conf"
+                    done
                 else
                     # Check for changes in clients
                     changed_clients=()
@@ -367,12 +382,13 @@ else
                     max_clients=$((number_of_clients > old_clients ? number_of_clients : old_clients))
 
                     for i in $(seq 0 $((max_clients - 1))); do
-                        yq e ".clients[$i]" config.yaml > /tmp/client_new_$i.yaml
-                        yq e ".clients[$i]" /etc/wireguard/config.yaml.backup > /tmp/client_old_$i.yaml
-                        if ! cmp -s /tmp/client_new_$i.yaml /tmp/client_old_$i.yaml; then
+                        # Compare client names specifically
+                        new_name=$(yq e ".clients[$i].name" config.yaml)
+                        old_name=$(yq e ".clients[$i].name" /etc/wireguard/config.yaml.backup)
+                        # If name changed or client is new/changed in any way
+                        if [[ "$new_name" != "$old_name" || ! -f /tmp/client_new_$i.yaml || ! cmp -s <(yq e ".clients[$i]" config.yaml) <(yq e ".clients[$i]" /etc/wireguard/config.yaml.backup) ]]; then
                             changed_clients+=("$i")
                         fi
-                        rm -f /tmp/client_new_$i.yaml /tmp/client_old_$i.yaml
                     done
 
                     if [[ ${#changed_clients[@]} -gt 0 ]]; then
@@ -384,6 +400,16 @@ else
                         fi
                         cp config.yaml /etc/wireguard/config.yaml.backup
                         chmod 600 /etc/wireguard/config.yaml.backup
+
+                        # Display QR codes only for changed clients
+                        echo "Updated client configurations:"
+                        for i in "${changed_clients[@]}"; do
+                            client_name=$(yq e ".clients[$i].name" config.yaml)
+                            client_conf=~/"${client_name}-wg0.conf"
+                            echo -e "\nClient: $(basename "$client_conf")"
+                            qrencode -t ANSI256UTF8 < "$client_conf"
+                            echo "Configuration file saved at: $client_conf"
+                        done
                     else
                         echo "No actionable changes detected in client configurations."
                         rm -f /tmp/server_new.yaml /tmp/server_old.yaml
@@ -400,6 +426,14 @@ else
                 fi
                 cp config.yaml /etc/wireguard/config.yaml.backup
                 chmod 600 /etc/wireguard/config.yaml.backup
+
+                # Display all client QR codes
+                echo "Updated client configurations:"
+                for client_conf in ~/*-wg0.conf; do
+                    echo -e "\nClient: $(basename "$client_conf")"
+                    qrencode -t ANSI256UTF8 < "$client_conf"
+                    echo "Configuration file saved at: $client_conf"
+                done
             fi
 
             # Restart WireGuard service to apply new configuration
@@ -410,14 +444,6 @@ else
                 echo "Error: Failed to restart wg0. Please check the configuration in /etc/wireguard/wg0.conf."
                 exit 1
             fi
-
-            # Display client QR codes
-            echo "Updated client configurations:"
-            for client_conf in ~/*-wg0.conf; do
-                echo -e "\nClient: $(basename "$client_conf")"
-                qrencode -t ANSI256UTF8 < "$client_conf"
-                echo "Configuration file saved at: $client_conf"
-            done
             ;;
         2)
             systemctl disable --now wg-quick@wg0
