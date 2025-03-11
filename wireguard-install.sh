@@ -22,8 +22,8 @@ else
     exit 1
 fi
 
-# Function to generate server and client configurations from YAML
-generate_configs() {
+# Function to generate full server and client configurations from YAML
+generate_full_configs() {
     # Parse server configuration from YAML
     port=$(yq e '.server.port' config.yaml)
     mtu=$(yq e '.server.mtu' config.yaml)
@@ -57,7 +57,7 @@ ListenPort = $port
 $( [[ "$mtu" != "null" && -n "$mtu" ]] && echo "MTU = $mtu" )
 EOF
 
-    # Generate client configurations
+    # Generate all client configurations
     number_of_clients=$(yq e '.clients | length' config.yaml)
     if [[ $number_of_clients -gt 253 ]]; then
         echo "Warning: Number of clients exceeds 253, which may exceed the /24 subnet limit."
@@ -108,7 +108,6 @@ AllowedIPs = $client_allowed_ips
 Endpoint = [to be set]:$port
 PersistentKeepalive = $client_persistent_keepalive
 EOF
-        # Set secure permissions for client configuration file
         chmod 600 ~/"${client_name}-wg0.conf"
     done
 
@@ -129,6 +128,86 @@ EOF
     # Update client configuration files with the endpoint
     for client_conf in ~/*-wg0.conf; do
         sed -i "s/Endpoint = \[to be set\]:$port/Endpoint = $endpoint:$port/" "$client_conf"
+    done
+}
+
+# Function to regenerate specific client configurations
+generate_client_configs() {
+    local changed_clients=("$@") # Array of client indices to regenerate
+    port=$(yq e '.server.port' config.yaml)
+    ipv4_enabled=$(yq e '.server.ipv4.enabled' config.yaml)
+    server_ipv4=$(yq e '.server.ipv4.address' config.yaml)
+    server_ipv4_ip=$(echo "$server_ipv4" | cut -d '/' -f 1)
+    server_ipv4_mask=$(echo "$server_ipv4" | cut -d '/' -f 2)
+    base_ipv4=$(echo "$server_ipv4_ip" | cut -d '.' -f 1-3)
+    ipv6_enabled=$(yq e '.server.ipv6.enabled' config.yaml)
+    server_ipv6=$(yq e '.server.ipv6.address' config.yaml)
+    server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
+    server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
+    base_ipv6=$(echo "$server_ipv6_ip" | sed 's/::[0-9]*$/::/')
+    server_public_key=$(wg show wg0 public-key)
+
+    # Detect public endpoint
+    public_endpoint=$(yq e '.server.public_endpoint' config.yaml)
+    if [[ -n "$public_endpoint" && "$public_endpoint" != "null" ]]; then
+        endpoint="$public_endpoint"
+    else
+        endpoint=$(wget -qO- http://ip1.dynupdate.no-ip.com/ || curl -s http://ip1.dynupdate.no-ip.com/)
+        if [[ -z "$endpoint" ]]; then
+            echo "Error: Could not auto-detect public IP."
+            return 1
+        fi
+    fi
+
+    for i in "${changed_clients[@]}"; do
+        client_name=$(yq e ".clients[$i].name" config.yaml)
+        client_dns=$(yq e ".clients[$i].dns" config.yaml)
+        client_mtu=$(yq e ".clients[$i].mtu" config.yaml)
+        client_allowed_ips=$(yq e ".clients[$i].allowed_ips" config.yaml)
+        client_persistent_keepalive=$(yq e ".clients[$i].persistent_keepalive" config.yaml)
+
+        # Calculate client IPs
+        octet=$((i + 2))
+        client_ipv4="${base_ipv4}.${octet}/$server_ipv4_mask"
+        if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
+            client_ipv6="${base_ipv6}${octet}/$server_ipv6_mask"
+        fi
+
+        # Generate client keys
+        client_private_key=$(wg genkey)
+        client_public_key=$(echo "$client_private_key" | wg pubkey)
+        psk=$(wg genpsk)
+
+        # Remove old peer section from wg0.conf
+        sed -i "/# BEGIN_PEER $client_name/,/# END_PEER $client_name/d" /etc/wireguard/wg0.conf
+
+        # Append updated client to wg0.conf
+        cat << EOF >> /etc/wireguard/wg0.conf
+
+# BEGIN_PEER $client_name
+[Peer]
+PublicKey = $client_public_key
+PresharedKey = $psk
+AllowedIPs = ${base_ipv4}.${octet}/32$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", ${base_ipv6}${octet}/128" )
+# END_PEER $client_name
+EOF
+
+        # Regenerate client configuration file
+        cat << EOF > ~/"${client_name}-wg0.conf"
+[Interface]
+Address = $client_ipv4$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", $client_ipv6" )
+DNS = $client_dns
+PrivateKey = $client_private_key
+$( [[ "$client_mtu" != "null" && -n "$client_mtu" ]] && echo "MTU = $client_mtu" )
+
+[Peer]
+PublicKey = $server_public_key
+PresharedKey = $psk
+AllowedIPs = $client_allowed_ips
+Endpoint = $endpoint:$port
+PersistentKeepalive = $client_persistent_keepalive
+EOF
+        chmod 600 ~/"${client_name}-wg0.conf"
     done
 }
 
@@ -175,8 +254,8 @@ if [[ ! -e /etc/wireguard/wg0.conf ]]; then
     cp config.yaml /etc/wireguard/config.yaml.backup
     chmod 600 /etc/wireguard/config.yaml.backup
 
-    # Generate configurations
-    if ! generate_configs; then
+    # Generate full configurations
+    if ! generate_full_configs; then
         echo "Error: Failed to generate configurations."
         exit 1
     fi
@@ -254,7 +333,6 @@ else
     read -p "Option: " option
 
     case $option in
-
         1)
             # Check for config.yaml
             if [[ ! -f config.yaml ]]; then
@@ -268,18 +346,61 @@ else
                     echo "No changes detected in config.yaml. No action taken."
                     exit 0
                 fi
-            fi
 
-            # If different or no backup, proceed with regeneration
-            echo "Regenerating configurations from config.yaml..."
-            if ! generate_configs; then
-                echo "Error: Failed to regenerate configurations."
-                exit 1
-            fi
+                # Check if server section changed
+                yq e '.server' config.yaml > /tmp/server_new.yaml
+                yq e '.server' /etc/wireguard/config.yaml.backup > /tmp/server_old.yaml
+                if ! cmp -s /tmp/server_new.yaml /tmp/server_old.yaml; then
+                    echo "Server configuration changed. Regenerating all configurations..."
+                    if ! generate_full_configs; then
+                        echo "Error: Failed to regenerate configurations."
+                        rm -f /tmp/server_new.yaml /tmp/server_old.yaml
+                        exit 1
+                    fi
+                    cp config.yaml /etc/wireguard/config.yaml.backup
+                    chmod 600 /etc/wireguard/config.yaml.backup
+                else
+                    # Check for changes in clients
+                    changed_clients=()
+                    number_of_clients=$(yq e '.clients | length' config.yaml)
+                    old_clients=$(yq e '.clients | length' /etc/wireguard/config.yaml.backup)
+                    max_clients=$((number_of_clients > old_clients ? number_of_clients : old_clients))
 
-            # Update the backup YAML
-            cp config.yaml /etc/wireguard/config.yaml.backup
-            chmod 600 /etc/wireguard/config.yaml.backup
+                    for i in $(seq 0 $((max_clients - 1))); do
+                        yq e ".clients[$i]" config.yaml > /tmp/client_new_$i.yaml
+                        yq e ".clients[$i]" /etc/wireguard/config.yaml.backup > /tmp/client_old_$i.yaml
+                        if ! cmp -s /tmp/client_new_$i.yaml /tmp/client_old_$i.yaml; then
+                            changed_clients+=("$i")
+                        fi
+                        rm -f /tmp/client_new_$i.yaml /tmp/client_old_$i.yaml
+                    done
+
+                    if [[ ${#changed_clients[@]} -gt 0 ]]; then
+                        echo "Regenerating configurations for changed clients: ${changed_clients[*]}..."
+                        if ! generate_client_configs "${changed_clients[@]}"; then
+                            echo "Error: Failed to regenerate client configurations."
+                            rm -f /tmp/server_new.yaml /tmp/server_old.yaml
+                            exit 1
+                        fi
+                        cp config.yaml /etc/wireguard/config.yaml.backup
+                        chmod 600 /etc/wireguard/config.yaml.backup
+                    else
+                        echo "No actionable changes detected in client configurations."
+                        rm -f /tmp/server_new.yaml /tmp/server_old.yaml
+                        exit 0
+                    fi
+                fi
+                rm -f /tmp/server_new.yaml /tmp/server_old.yaml
+            else
+                # No backup exists, regenerate everything
+                echo "No backup found. Regenerating all configurations..."
+                if ! generate_full_configs; then
+                    echo "Error: Failed to regenerate configurations."
+                    exit 1
+                fi
+                cp config.yaml /etc/wireguard/config.yaml.backup
+                chmod 600 /etc/wireguard/config.yaml.backup
+            fi
 
             # Restart WireGuard service to apply new configuration
             echo "Restarting WireGuard service..."
@@ -298,7 +419,6 @@ else
                 echo "Configuration file saved at: $client_conf"
             done
             ;;
-
         2)
             systemctl disable --now wg-quick@wg0
             rm -rf /etc/wireguard
@@ -309,7 +429,6 @@ else
             fi
             echo "WireGuard removed."
             ;;
-
         3)
             exit 0
             ;;
