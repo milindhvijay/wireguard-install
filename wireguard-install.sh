@@ -222,9 +222,6 @@ EOF
         exit 1
     fi
 
-    # Optionally enable the service to start on boot
-    systemctl enable wg-quick@wg0
-
     # Start WireGuard service
     systemctl enable --now wg-quick@wg0
 
