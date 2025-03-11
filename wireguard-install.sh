@@ -248,8 +248,8 @@ else
 
     echo "WireGuard is already installed."
     echo "Select an option:"
-    echo "   1) Remove WireGuard"
-    echo "   2) Re-create server and client configurations from YAML"
+    echo "   1) Re-create server and client configurations from YAML"
+    echo "   2) Remove WireGuard"
     echo "   3) Exit"
     read -p "Option: " option
 
