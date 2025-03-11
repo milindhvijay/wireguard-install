@@ -219,7 +219,7 @@ EOF
 }
 
 # Main installation logic
-if [[ ! -e /etc/wireguard/wg0.conf ]]; then
+if [[ ! -d /etc/wireguard ]]; then
     ### System Setup ###
 
     # Package installation
