@@ -386,9 +386,10 @@ else
                         new_name=$(yq e ".clients[$i].name" config.yaml)
                         old_name=$(yq e ".clients[$i].name" /etc/wireguard/config.yaml.backup)
                         # If name changed or client is new/changed in any way
-                        if [[ "$new_name" != "$old_name" || ! cmp -s <(yq e ".clients[$i]" config.yaml) <(yq e ".clients[$i]" /etc/wireguard/config.yaml.backup) ]]; then
+                        if [[ "$new_name" != "$old_name" ]] || ! cmp -s <(yq e ".clients[$i]" config.yaml) <(yq e ".clients[$i]" /etc/wireguard/config.yaml.backup); then
                             changed_clients+=("$i")
                         fi
+
                     done
 
                     if [[ ${#changed_clients[@]} -gt 0 ]]; then
