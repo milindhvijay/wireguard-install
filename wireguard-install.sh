@@ -213,17 +213,14 @@ EOF
     echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
     echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
 
-    # Activate the WireGuard interface explicitly
+    # Start WireGuard service
     echo "Activating WireGuard interface..."
-    if wg-quick up wg0; then
+    if systemctl enable --now wg-quick@wg0; then
         echo "WireGuard interface wg0 is now active."
     else
         echo "Error: Failed to activate wg0. Please check the configuration in /etc/wireguard/wg0.conf."
         exit 1
     fi
-
-    # Start WireGuard service
-    systemctl enable --now wg-quick@wg0
 
     # Display client QR codes
     echo "WireGuard setup complete. Here are the client configurations:"
