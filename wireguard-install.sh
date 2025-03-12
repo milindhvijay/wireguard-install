@@ -152,6 +152,7 @@ generate_client_configs() {
     server_ipv6=$(yq e '.server.ipv6.address' config.yaml)
     server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
     server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
+    vpn_ipv6_subnet="${server_ipv6_ip}/${server_ipv6_mask}"
     base_ipv6=$(echo "$server_ipv6_ip" | sed 's/:[0-9a-f]*$//')
     server_ipv6_last_segment=$(echo "$server_ipv6_ip" | grep -o '[0-9a-f]*$')
     server_public_key=$(wg show wg0 public-key)
@@ -235,6 +236,69 @@ EOF
     done
 }
 
+# Function to configure firewall (called separately to ensure rules are applied before WG start)
+configure_firewall() {
+    local port="$1"
+    local vpn_ipv4_subnet="$2"
+    local vpn_ipv6_subnet="$3"
+    local firewall="$4"
+
+    # Configure firewall (IPv4 and IPv6 based on YAML settings)
+    if [[ "$firewall" == "firewalld" ]]; then
+        systemctl enable --now firewalld
+        firewall-cmd --permanent --add-port="$port"/udp
+        if [[ "$ipv4_enabled" == "true" ]]; then
+            firewall-cmd --permanent --zone=trusted --add-source="$vpn_ipv4_subnet"
+        fi
+        if [[ "$ipv6_enabled" == "true" ]]; then
+            firewall-cmd --permanent --zone=trusted --add-source="$vpn_ipv6_subnet"
+        fi
+        # Enable masquerading based on NAT settings
+        if [[ "$ipv4_enabled" == "true" || ( "$ipv6_enabled" == "true" && "$(yq e '.server.ipv6.nat' config.yaml)" == "true" ) ]]; then
+            firewall-cmd --permanent --add-masquerade
+        fi
+        firewall-cmd --reload
+    else
+        # iptables for IPv4
+        if [[ "$ipv4_enabled" == "true" ]]; then
+            iptables -A INPUT -p udp --dport "$port" -j ACCEPT
+            iptables -A FORWARD -s "$vpn_ipv4_subnet" -j ACCEPT
+            iptables -t nat -A POSTROUTING -s "$vpn_ipv4_subnet" -o $(yq e '.server.host_interface' config.yaml) -j MASQUERADE
+        fi
+        # ip6tables for IPv6
+        if [[ "$ipv6_enabled" == "true" ]]; then
+            ip6tables -A INPUT -p udp --dport "$port" -j ACCEPT
+            ip6tables -A FORWARD -s "$vpn_ipv6_subnet" -j ACCEPT
+            if [[ "$(yq e '.server.ipv6.nat' config.yaml)" == "true" ]]; then
+                ip6tables -t nat -A POSTROUTING -s "$vpn_ipv6_subnet" -o $(yq e '.server.host_interface' config.yaml) -j MASQUERADE
+            fi
+        fi
+    fi
+}
+
+# Function to clear existing firewall rules (for updates)
+clear_firewall_rules() {
+    local firewall="$1"
+    if [[ "$firewall" == "firewalld" ]]; then
+        firewall-cmd --permanent --remove-port="$port"/udp >/dev/null 2>&1
+        if [[ "$ipv4_enabled" == "true" ]]; then
+            firewall-cmd --permanent --zone=trusted --remove-source="$vpn_ipv4_subnet" >/dev/null 2>&1
+        fi
+        if [[ "$ipv6_enabled" == "true" ]]; then
+            firewall-cmd --permanent --zone=trusted --remove-source="$vpn_ipv6_subnet" >/dev/null 2>&1
+        fi
+        firewall-cmd --permanent --remove-masquerade >/dev/null 2>&1
+        firewall-cmd --reload
+    else
+        iptables -D INPUT -p udp --dport "$port" -j ACCEPT >/dev/null 2>&1
+        iptables -D FORWARD -s "$vpn_ipv4_subnet" -j ACCEPT >/dev/null 2>&1
+        iptables -t nat -D POSTROUTING -s "$vpn_ipv4_subnet" -o $(yq e '.server.host_interface' config.yaml) -j MASQUERADE >/dev/null 2>&1
+        ip6tables -D INPUT -p udp --dport "$port" -j ACCEPT >/dev/null 2>&1
+        ip6tables -D FORWARD -s "$vpn_ipv6_subnet" -j ACCEPT >/dev/null 2>&1
+        ip6tables -t nat -D POSTROUTING -s "$vpn_ipv6_subnet" -o $(yq e '.server.host_interface' config.yaml) -j MASQUERADE >/dev/null 2>&1
+    fi
+}
+
 # Main installation logic
 if [[ ! -e /etc/wireguard/wg0.conf ]]; then
     ### System Setup ###
@@ -284,9 +348,12 @@ if [[ ! -e /etc/wireguard/wg0.conf ]]; then
         exit 1
     fi
 
-    # Set VPN subnets (for IPv4 only, skipping IPv6 to avoid ip6tables issue)
+    # Set VPN subnets
     if [[ "$ipv4_enabled" == "true" ]]; then
         vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
+    fi
+    if [[ "$ipv6_enabled" == "true" ]]; then
+        vpn_ipv6_subnet="${server_ipv6_ip}/${server_ipv6_mask}"
     fi
 
     echo
@@ -310,37 +377,8 @@ if [[ ! -e /etc/wireguard/wg0.conf ]]; then
         firewall="iptables"
     fi
 
-    # Configure firewall (IPv4 and IPv6 based on YAML settings)
-    if [[ "$firewall" == "firewalld" ]]; then
-        systemctl enable --now firewalld
-        firewall-cmd --permanent --add-port="$port"/udp
-        if [[ "$ipv4_enabled" == "true" ]]; then
-            firewall-cmd --permanent --zone=trusted --add-source="$vpn_ipv4_subnet"
-        fi
-        if [[ "$ipv6_enabled" == "true" ]]; then
-            firewall-cmd --permanent --zone=trusted --add-source="$vpn_ipv6_subnet"
-        fi
-        # Enable masquerading based on NAT settings
-        if [[ "$ipv4_enabled" == "true" || ( "$ipv6_enabled" == "true" && "$(yq e '.server.ipv6.nat' config.yaml)" == "true" ) ]]; then
-            firewall-cmd --permanent --add-masquerade
-        fi
-        firewall-cmd --reload
-    else
-        # iptables for IPv4
-        if [[ "$ipv4_enabled" == "true" ]]; then
-            iptables -A INPUT -p udp --dport "$port" -j ACCEPT
-            iptables -A FORWARD -s "$vpn_ipv4_subnet" -j ACCEPT
-            iptables -t nat -A POSTROUTING -s "$vpn_ipv4_subnet" -o $(yq e '.server.host_interface' config.yaml) -j MASQUERADE
-        fi
-        # ip6tables for IPv6
-        if [[ "$ipv6_enabled" == "true" ]]; then
-            ip6tables -A INPUT -p udp --dport "$port" -j ACCEPT
-            ip6tables -A FORWARD -s "$vpn_ipv6_subnet" -j ACCEPT
-            if [[ "$(yq e '.server.ipv6.nat' config.yaml)" == "true" ]]; then
-                ip6tables -t nat -A POSTROUTING -s "$vpn_ipv6_subnet" -o $(yq e '.server.host_interface' config.yaml) -j MASQUERADE
-            fi
-        fi
-    fi
+    # Configure firewall before starting WireGuard
+    configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet" "$firewall"
 
     # Enable IP forwarding (IPv4 and IPv6)
     sysctl -w net.ipv4.ip_forward=1
@@ -351,7 +389,20 @@ if [[ ! -e /etc/wireguard/wg0.conf ]]; then
     # Start WireGuard service
     echo "Activating WireGuard interface..."
     if systemctl enable --now wg-quick@wg0; then
-        echo "WireGuard interface wg0 is now active."
+        # Verify wg0 is actually up
+        if ! wg show wg0 >/dev/null 2>&1; then
+            echo "Warning: wg0 failed to start properly, attempting manual restart..."
+            wg-quick down wg0 >/dev/null 2>&1
+            wg-quick up wg0
+            if wg show wg0 >/dev/null 2>&1; then
+                echo "WireGuard interface wg0 is now active after manual restart."
+            else
+                echo "Error: Failed to activate wg0 even after manual restart. Please check /etc/wireguard/wg0.conf."
+                exit 1
+            fi
+        else
+            echo "WireGuard interface wg0 is now active."
+        fi
     else
         echo "Error: Failed to activate wg0. Please check the configuration in /etc/wireguard/wg0.conf."
         exit 1
@@ -390,6 +441,27 @@ else
                     exit 0
                 fi
 
+                # Define variables needed for firewall
+                port=$(yq e '.server.port' config.yaml)
+                ipv4_enabled=$(yq e '.server.ipv4.enabled' config.yaml)
+                server_ipv4=$(yq e '.server.ipv4.address' config.yaml)
+                server_ipv4_ip=$(echo "$server_ipv4" | cut -d '/' -f 1)
+                server_ipv4_mask=$(echo "$server_ipv4" | cut -d '/' -f 2)
+                base_ipv4=$(echo "$server_ipv4_ip" | cut -d '.' -f 1-3)
+                ipv6_enabled=$(yq e '.server.ipv6.enabled' config.yaml)
+                server_ipv6=$(yq e '.server.ipv6.address' config.yaml)
+                server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
+                server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
+                vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
+                vpn_ipv6_subnet="${server_ipv6_ip}/${server_ipv6_mask}"
+
+                # Firewall detection (for updates)
+                if systemctl is-active --quiet firewalld.service; then
+                    firewall="firewalld"
+                else
+                    firewall="iptables"
+                fi
+
                 # Check if server section changed
                 yq e '.server' config.yaml > /tmp/server_new.yaml
                 yq e '.server' /etc/wireguard/config.yaml.backup > /tmp/server_old.yaml
@@ -402,6 +474,10 @@ else
                     fi
                     cp config.yaml /etc/wireguard/config.yaml.backup
                     chmod 600 /etc/wireguard/config.yaml.backup
+
+                    # Clear and reconfigure firewall rules
+                    clear_firewall_rules "$firewall"
+                    configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet" "$firewall"
 
                     # Display all client QR codes
                     echo "Updated client configurations:"
@@ -437,6 +513,10 @@ else
                         cp config.yaml /etc/wireguard/config.yaml.backup
                         chmod 600 /etc/wireguard/config.yaml.backup
 
+                        # Clear and reconfigure firewall rules (in case subnet changed in clients)
+                        clear_firewall_rules "$firewall"
+                        configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet" "$firewall"
+
                         # Display QR codes only for changed clients
                         echo "Updated client configurations:"
                         for i in "${changed_clients[@]}"; do
@@ -463,6 +543,13 @@ else
                 cp config.yaml /etc/wireguard/config.yaml.backup
                 chmod 600 /etc/wireguard/config.yaml.backup
 
+                # Define variables for firewall
+                port=$(yq e '.server.port' config.yaml)
+                vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
+                vpn_ipv6_subnet="${server_ipv6_ip}/${server_ipv6_mask}"
+                firewall="iptables" # Default for no backup case
+                configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet" "$firewall"
+
                 # Display all client QR codes
                 echo "Updated client configurations:"
                 for client_conf in ~/*-wg0.conf; do
@@ -475,7 +562,20 @@ else
             # Restart WireGuard service to apply new configuration
             echo "Restarting WireGuard service..."
             if systemctl restart wg-quick@wg0; then
-                echo "WireGuard configurations updated and service restarted."
+                # Verify wg0 is actually up
+                if ! wg show wg0 >/dev/null 2>&1; then
+                    echo "Warning: wg0 failed to restart properly, attempting manual restart..."
+                    wg-quick down wg0 >/dev/null 2>&1
+                    wg-quick up wg0
+                    if wg show wg0 >/dev/null 2>&1; then
+                        echo "WireGuard interface wg0 is now active after manual restart."
+                    else
+                        echo "Error: Failed to restart wg0 even after manual restart. Please check /etc/wireguard/wg0.conf."
+                        exit 1
+                    fi
+                else
+                    echo "WireGuard configurations updated and service restarted."
+                fi
             else
                 echo "Error: Failed to restart wg0. Please check the configuration in /etc/wireguard/wg0.conf."
                 exit 1
