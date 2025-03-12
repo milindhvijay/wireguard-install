@@ -237,46 +237,42 @@ EOF
 }
 
 # Function to configure firewall (called separately to ensure rules are applied before WG start)
+# Function to configure firewall using nftables
 configure_firewall() {
     local port="$1"
     local vpn_ipv4_subnet="$2"
     local vpn_ipv6_subnet="$3"
-    local firewall="$4"
 
-    # Configure firewall (IPv4 and IPv6 based on YAML settings)
-    if [[ "$firewall" == "firewalld" ]]; then
-        systemctl enable --now firewalld
-        firewall-cmd --permanent --add-port="$port"/udp
-        if [[ "$ipv4_enabled" == "true" ]]; then
-            firewall-cmd --permanent --zone=trusted --add-source="$vpn_ipv4_subnet"
+    # Ensure nftables is enabled
+    systemctl enable --now nftables
+
+    # Create a new table if it doesn't exist
+    nft list tables | grep -q 'wg_firewall' || nft add table inet wg_firewall
+
+    # Create base chains if they don't exist
+    nft list chain inet wg_firewall input_chain 2>/dev/null || nft add chain inet wg_firewall input_chain { type filter hook input priority 0 \; }
+    nft list chain inet wg_firewall forward_chain 2>/dev/null || nft add chain inet wg_firewall forward_chain { type filter hook forward priority 0 \; }
+    nft list chain inet wg_firewall postrouting_chain 2>/dev/null || nft add chain inet wg_firewall postrouting_chain { type nat hook postrouting priority 100 \; }
+
+    # Allow UDP traffic on the WireGuard port
+    nft add rule inet wg_firewall input_chain udp dport "$port" accept
+
+    # Allow forwarding from VPN subnet
+    if [[ "$ipv4_enabled" == "true" ]]; then
+        nft add rule inet wg_firewall forward_chain ip saddr "$vpn_ipv4_subnet" accept
+        if [[ "$(yq e '.server.ipv4.nat' config.yaml)" == "true" ]]; then
+            nft add rule inet wg_firewall postrouting_chain ip saddr "$vpn_ipv4_subnet" oif "$(yq e '.server.host_interface' config.yaml)" masquerade
         fi
-        if [[ "$ipv6_enabled" == "true" ]]; then
-            firewall-cmd --permanent --zone=trusted --add-source="$vpn_ipv6_subnet"
-        fi
-        # Enable masquerading based on NAT settings for both IPv4 and IPv6
-        if [[ ( "$ipv4_enabled" == "true" && "$(yq e '.server.ipv4.nat' config.yaml)" == "true" ) || ( "$ipv6_enabled" == "true" && "$(yq e '.server.ipv6.nat' config.yaml)" == "true" ) ]]; then
-            firewall-cmd --permanent --add-masquerade
-        fi
-        firewall-cmd --reload
-    else
-        # iptables for IPv4
-        if [[ "$ipv4_enabled" == "true" ]]; then
-            iptables -A INPUT -p udp --dport "$port" -j ACCEPT
-            iptables -A FORWARD -s "$vpn_ipv4_subnet" -j ACCEPT
-            if [[ "$(yq e '.server.ipv4.nat' config.yaml)" == "true" ]]; then
-                iptables -t nat -A POSTROUTING -s "$vpn_ipv4_subnet" -o $(yq e '.server.host_interface' config.yaml) -j MASQUERADE
-            fi
-        fi
-        # ip6tables for IPv6
-        if [[ "$ipv6_enabled" == "true" ]]; then
-            ip6tables -A INPUT -p udp --dport "$port" -j ACCEPT
-            ip6tables -A FORWARD -s "$vpn_ipv6_subnet" -j ACCEPT
-            if [[ "$(yq e '.server.ipv6.nat' config.yaml)" == "true" ]]; then
-                ip6tables -t nat -A POSTROUTING -s "$vpn_ipv6_subnet" -o $(yq e '.server.host_interface' config.yaml) -j MASQUERADE
-            fi
+    fi
+
+    if [[ "$ipv6_enabled" == "true" ]]; then
+        nft add rule inet wg_firewall forward_chain ip6 saddr "$vpn_ipv6_subnet" accept
+        if [[ "$(yq e '.server.ipv6.nat' config.yaml)" == "true" ]]; then
+            nft add rule inet wg_firewall postrouting_chain ip6 saddr "$vpn_ipv6_subnet" oif "$(yq e '.server.host_interface' config.yaml)" masquerade
         fi
     fi
 }
+
 
 # Function to clear existing firewall rules (for updates)
 clear_firewall_rules() {
