@@ -253,8 +253,8 @@ configure_firewall() {
         if [[ "$ipv6_enabled" == "true" ]]; then
             firewall-cmd --permanent --zone=trusted --add-source="$vpn_ipv6_subnet"
         fi
-        # Enable masquerading based on NAT settings
-        if [[ "$ipv4_enabled" == "true" || ( "$ipv6_enabled" == "true" && "$(yq e '.server.ipv6.nat' config.yaml)" == "true" ) ]]; then
+        # Enable masquerading based on NAT settings for both IPv4 and IPv6
+        if [[ ( "$ipv4_enabled" == "true" && "$(yq e '.server.ipv4.nat' config.yaml)" == "true" ) || ( "$ipv6_enabled" == "true" && "$(yq e '.server.ipv6.nat' config.yaml)" == "true" ) ]]; then
             firewall-cmd --permanent --add-masquerade
         fi
         firewall-cmd --reload
@@ -263,7 +263,9 @@ configure_firewall() {
         if [[ "$ipv4_enabled" == "true" ]]; then
             iptables -A INPUT -p udp --dport "$port" -j ACCEPT
             iptables -A FORWARD -s "$vpn_ipv4_subnet" -j ACCEPT
-            iptables -t nat -A POSTROUTING -s "$vpn_ipv4_subnet" -o $(yq e '.server.host_interface' config.yaml) -j MASQUERADE
+            if [[ "$(yq e '.server.ipv4.nat' config.yaml)" == "true" ]]; then
+                iptables -t nat -A POSTROUTING -s "$vpn_ipv4_subnet" -o $(yq e '.server.host_interface' config.yaml) -j MASQUERADE
+            fi
         fi
         # ip6tables for IPv6
         if [[ "$ipv6_enabled" == "true" ]]; then
