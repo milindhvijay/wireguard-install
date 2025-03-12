@@ -251,25 +251,24 @@ flush ruleset
 
 table inet wireguard {
     chain input {
-        type filter hook input priority 0; policy accept;
+        type filter hook input priority 0; policy drop;
         # Accept WireGuard UDP traffic
         udp dport $port accept
-        # Allow traffic from VPN subnet to server (optional, for server-hosted services)
-        $( [[ "$ipv4_enabled" == "true" ]] && echo "ip saddr $vpn_ipv4_subnet accept" )
-        $( [[ "$ipv6_enabled" == "true" ]] && echo "ip6 saddr $vpn_ipv6_subnet accept" )
+        # Accept established/related traffic
+        ct state established,related accept
     }
 
     chain forward {
-        type filter hook forward priority 0; policy accept;
-        # Allow traffic to/from VPN subnets
+        type filter hook forward priority 0; policy drop;
+        # Allow forwarding for VPN subnets
         $( [[ "$ipv4_enabled" == "true" ]] && echo "ip saddr $vpn_ipv4_subnet accept" )
-        $( [[ "$ipv4_enabled" == "true" ]] && echo "ip daddr $vpn_ipv4_subnet accept" )
         $( [[ "$ipv6_enabled" == "true" ]] && echo "ip6 saddr $vpn_ipv6_subnet accept" )
-        $( [[ "$ipv6_enabled" == "true" ]] && echo "ip6 daddr $vpn_ipv6_subnet accept" )
+        # Accept established/related traffic
+        ct state established,related accept
     }
 
     chain postrouting {
-        type nat hook postrouting priority 100; policy accept;
+        type nat hook postrouting priority 100;
         # Enable masquerading if NAT is enabled
         $( [[ "$ipv4_enabled" == "true" && "$(yq e '.server.ipv4.nat' config.yaml)" == "true" ]] && echo "ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" masquerade" )
         $( [[ "$ipv6_enabled" == "true" && "$(yq e '.server.ipv6.nat' config.yaml)" == "true" ]] && echo "ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" masquerade" )
