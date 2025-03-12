@@ -1,46 +1,46 @@
-server:
-  # Server's public IP or hostname. Set to "auto" to detect automatically.
-  endpoint: auto
-  # Port to listen on (defaults to 51820 if not specified)
-  port: 51820
-  # Internal IP address with subnet mask (required)
-  internal_ip: 10.0.0.1/24
-  # WireGuard interface name (defaults to wg0)
-  interface_name: wg0
-  # Host network interface for NAT (e.g., eth0, ens3)
-  # Leave empty to auto-detect the interface with default route
-  host_interface: eth0
-  # MTU setting (defaults to 1420 if not specified)
-  mtu: 1420
-  # Custom PostUp rules (optional)
-  # %i will be replaced with WireGuard interface name
-  # %h will be replaced with host interface name
-  post_up: iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o %h -j MASQUERADE
-  # Custom PostDown rules (optional)
-  post_down: iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o %h -j MASQUERADE
+# WireGuard Server and Client Configuration
 
-# List of clients to configure
+server:
+  # UDP port for WireGuard to listen on
+  port: 51820
+
+  # Network interface on host to bind to (optional, typically not needed for WireGuard)
+  host_interface: eth0
+
+  # MTU for server WireGuard interface
+  mtu: 1420
+
+  # Public endpoint (only if server is behind NAT)
+  # Leave empty to auto-detect
+  public_endpoint:
+
+  # IP configuration
+  ipv4:
+    enabled: true
+    # Full IPv4 address with subnet mask for the server
+    address: 10.0.0.1/24
+
+  ipv6:
+    enabled: true
+    # Full IPv6 address with subnet mask for the server
+    address: 2a01:4f8:1c1b:743c::1/80
+
+# Client configuration
 clients:
   - name: phone
-    # Internal IP (optional - will be auto-assigned if not specified)
-    internal_ip: 10.0.0.2/32
-    # DNS servers (optional)
-    dns: 1.1.1.1, 8.8.8.8
-    # Networks to route through VPN
-    allowed_ips: 0.0.0.0/0, ::/0
-    # Keep-alive interval in seconds (optional)
-    persistent_keepalive: 25
-    # MTU setting (optional - defaults to 1420)
+    dns: 1.1.1.1, 1.0.0.1
     mtu: 1420
+    allowed_ips: 0.0.0.0/0, ::/0
+    persistent_keepalive: 25
 
   - name: laptop
-    internal_ip: 10.0.0.3/32
-    dns: 1.1.1.1
-    allowed_ips: 0.0.0.0/0
+    dns: 8.8.8.8, 8.8.4.4
+    mtu: 1420
+    allowed_ips: 0.0.0.0/0, ::/0
     persistent_keepalive: 25
 
   - name: tablet
-    # IP will be auto-assigned (10.0.0.4/32)
-    dns: 1.1.1.1, 8.8.8.8
-    allowed_ips: 0.0.0.0/0
-    # No persistent_keepalive specified
+    dns: 9.9.9.9, 149.112.112.112
+    mtu: 1420
+    allowed_ips: 0.0.0.0/0, ::/0
+    persistent_keepalive: 25
