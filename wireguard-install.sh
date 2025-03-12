@@ -238,12 +238,24 @@ EOF
 
 # Function to configure firewall with nftables
 configure_firewall() {
-    local port="$1"  # Not used directly in this case, but kept for consistency
+    local port="$1"  # Kept for consistency, though not used here
     local vpn_ipv4_subnet="$2"
     local vpn_ipv6_subnet="$3"
     local host_interface=$(yq e '.server.host_interface' config.yaml)
-    local server_ipv4_static=$(yq e '.server.ipv4.static_address' config.yaml)  # Static IPv4 address
-    local server_ipv6_static=$(yq e '.server.ipv6.static_address' config.yaml)  # Static IPv6 address
+
+    # Automatically detect server's static IPv4 address from host_interface
+    server_ipv4_static=$(ip -4 addr show "$host_interface" | grep -oP 'inet \K[\d.]+' | head -n 1)
+    if [[ -z "$server_ipv4_static" && "$ipv4_enabled" == "true" ]]; then
+        echo "Error: Could not detect IPv4 address for $host_interface."
+        return 1
+    fi
+
+    # Automatically detect server's static IPv6 address from host_interface (global scope)
+    server_ipv6_static=$(ip -6 addr show "$host_interface" scope global | grep -oP 'inet6 \K[0-9a-f:]+' | head -n 1)
+    if [[ -z "$server_ipv6_static" && "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
+        echo "Error: Could not detect IPv6 address for $host_interface."
+        return 1
+    fi
 
     # Create nftables configuration file
     cat << EOF > /etc/nftables.conf
@@ -254,9 +266,9 @@ flush ruleset
 table inet wireguard {
     chain postrouting {
         type nat hook postrouting priority 100; policy accept;
-        # Use static IP addresses for SNAT instead of masquerading
-        $( [[ "$ipv4_enabled" == "true" && "$server_ipv4_static" != "null" ]] && echo "ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" snat to $server_ipv4_static persistent" )
-        $( [[ "$ipv6_enabled" == "true" && "$server_ipv6_static" != "null" ]] && echo "ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" snat to $server_ipv6_static persistent" )
+        # Use automatically detected static IP addresses for SNAT
+        $( [[ "$ipv4_enabled" == "true" && -n "$server_ipv4_static" ]] && echo "ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" snat to $server_ipv4_static persistent" )
+        $( [[ "$ipv6_enabled" == "true" && -n "$server_ipv6_static" ]] && echo "ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" snat to $server_ipv6_static persistent" )
     }
 }
 EOF
