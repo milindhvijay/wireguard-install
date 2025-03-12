@@ -61,9 +61,6 @@ EOF
 
     # Generate all client configurations
     number_of_clients=$(yq e '.clients | length' config.yaml)
-    if [[ $number_of_clients -gt 253 ]]; then
-        echo "Warning: Number of clients exceeds 253, which may exceed the /24 subnet limit."
-    fi
 
     for i in $(seq 0 $(($number_of_clients - 1))); do
         client_name=$(yq e ".clients[$i].name" config.yaml)
@@ -313,17 +310,36 @@ if [[ ! -e /etc/wireguard/wg0.conf ]]; then
         firewall="iptables"
     fi
 
-    # Configure firewall (IPv4 only, simplified)
+    # Configure firewall (IPv4 and IPv6 based on YAML settings)
     if [[ "$firewall" == "firewalld" ]]; then
         systemctl enable --now firewalld
         firewall-cmd --permanent --add-port="$port"/udp
-        firewall-cmd --permanent --zone=trusted --add-source="$vpn_ipv4_subnet"
-        firewall-cmd --permanent --add-masquerade
+        if [[ "$ipv4_enabled" == "true" ]]; then
+            firewall-cmd --permanent --zone=trusted --add-source="$vpn_ipv4_subnet"
+        fi
+        if [[ "$ipv6_enabled" == "true" ]]; then
+            firewall-cmd --permanent --zone=trusted --add-source="$vpn_ipv6_subnet"
+        fi
+        # Enable masquerading based on NAT settings
+        if [[ "$ipv4_enabled" == "true" || ( "$ipv6_enabled" == "true" && "$(yq e '.server.ipv6.nat' config.yaml)" == "true" ) ]]; then
+            firewall-cmd --permanent --add-masquerade
+        fi
         firewall-cmd --reload
     else
-        iptables -A INPUT -p udp --dport "$port" -j ACCEPT
-        iptables -A FORWARD -s "$vpn_ipv4_subnet" -j ACCEPT
-        iptables -t nat -A POSTROUTING -s "$vpn_ipv4_subnet" -o eth0 -j MASQUERADE
+        # iptables for IPv4
+        if [[ "$ipv4_enabled" == "true" ]]; then
+            iptables -A INPUT -p udp --dport "$port" -j ACCEPT
+            iptables -A FORWARD -s "$vpn_ipv4_subnet" -j ACCEPT
+            iptables -t nat -A POSTROUTING -s "$vpn_ipv4_subnet" -o $(yq e '.server.host_interface' config.yaml) -j MASQUERADE
+        fi
+        # ip6tables for IPv6
+        if [[ "$ipv6_enabled" == "true" ]]; then
+            ip6tables -A INPUT -p udp --dport "$port" -j ACCEPT
+            ip6tables -A FORWARD -s "$vpn_ipv6_subnet" -j ACCEPT
+            if [[ "$(yq e '.server.ipv6.nat' config.yaml)" == "true" ]]; then
+                ip6tables -t nat -A POSTROUTING -s "$vpn_ipv6_subnet" -o $(yq e '.server.host_interface' config.yaml) -j MASQUERADE
+            fi
+        fi
     fi
 
     # Enable IP forwarding (IPv4 and IPv6)
