@@ -236,65 +236,56 @@ EOF
     done
 }
 
-# Function to configure firewall (called separately to ensure rules are applied before WG start)
-# Function to configure firewall using nftables
+# Function to configure firewall with nftables
 configure_firewall() {
     local port="$1"
     local vpn_ipv4_subnet="$2"
     local vpn_ipv6_subnet="$3"
+    local host_interface=$(yq e '.server.host_interface' config.yaml)
 
-    # Ensure nftables is enabled
-    systemctl enable --now nftables
+    # Create nftables configuration file
+    cat << EOF > /etc/nftables.conf
+#!/usr/sbin/nft -f
 
-    # Create a new table if it doesn't exist
-    nft list tables | grep -q 'wg_firewall' || nft add table inet wg_firewall
+flush ruleset
 
-    # Create base chains if they don't exist
-    nft list chain inet wg_firewall input_chain 2>/dev/null || nft add chain inet wg_firewall input_chain { type filter hook input priority 0 \; }
-    nft list chain inet wg_firewall forward_chain 2>/dev/null || nft add chain inet wg_firewall forward_chain { type filter hook forward priority 0 \; }
-    nft list chain inet wg_firewall postrouting_chain 2>/dev/null || nft add chain inet wg_firewall postrouting_chain { type nat hook postrouting priority 100 \; }
+table inet wireguard {
+    chain input {
+        type filter hook input priority 0; policy drop;
+        # Accept WireGuard UDP traffic
+        udp dport $port accept
+        # Accept established/related traffic
+        ct state established,related accept
+    }
 
-    # Allow UDP traffic on the WireGuard port
-    nft add rule inet wg_firewall input_chain udp dport "$port" accept
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+        # Allow forwarding for VPN subnets
+        $( [[ "$ipv4_enabled" == "true" ]] && echo "ip saddr $vpn_ipv4_subnet accept" )
+        $( [[ "$ipv6_enabled" == "true" ]] && echo "ip6 saddr $vpn_ipv6_subnet accept" )
+        # Accept established/related traffic
+        ct state established,related accept
+    }
 
-    # Allow forwarding from VPN subnet
-    if [[ "$ipv4_enabled" == "true" ]]; then
-        nft add rule inet wg_firewall forward_chain ip saddr "$vpn_ipv4_subnet" accept
-        if [[ "$(yq e '.server.ipv4.nat' config.yaml)" == "true" ]]; then
-            nft add rule inet wg_firewall postrouting_chain ip saddr "$vpn_ipv4_subnet" oif "$(yq e '.server.host_interface' config.yaml)" masquerade
-        fi
-    fi
+    chain postrouting {
+        type nat hook postrouting priority 100;
+        # Enable masquerading if NAT is enabled
+        $( [[ "$ipv4_enabled" == "true" && "$(yq e '.server.ipv4.nat' config.yaml)" == "true" ]] && echo "ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" masquerade" )
+        $( [[ "$ipv6_enabled" == "true" && "$(yq e '.server.ipv6.nat' config.yaml)" == "true" ]] && echo "ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" masquerade" )
+    }
+}
+EOF
 
-    if [[ "$ipv6_enabled" == "true" ]]; then
-        nft add rule inet wg_firewall forward_chain ip6 saddr "$vpn_ipv6_subnet" accept
-        if [[ "$(yq e '.server.ipv6.nat' config.yaml)" == "true" ]]; then
-            nft add rule inet wg_firewall postrouting_chain ip6 saddr "$vpn_ipv6_subnet" oif "$(yq e '.server.host_interface' config.yaml)" masquerade
-        fi
-    fi
+    # Apply the nftables rules
+    nft -f /etc/nftables.conf
+    systemctl enable nftables
+    systemctl restart nftables
 }
 
-
-# Function to clear existing firewall rules (for updates)
+# Function to clear existing firewall rules with nftables
 clear_firewall_rules() {
-    local firewall="$1"
-    if [[ "$firewall" == "firewalld" ]]; then
-        firewall-cmd --permanent --remove-port="$port"/udp >/dev/null 2>&1
-        if [[ "$ipv4_enabled" == "true" ]]; then
-            firewall-cmd --permanent --zone=trusted --remove-source="$vpn_ipv4_subnet" >/dev/null 2>&1
-        fi
-        if [[ "$ipv6_enabled" == "true" ]]; then
-            firewall-cmd --permanent --zone=trusted --remove-source="$vpn_ipv6_subnet" >/dev/null 2>&1
-        fi
-        firewall-cmd --permanent --remove-masquerade >/dev/null 2>&1
-        firewall-cmd --reload
-    else
-        iptables -D INPUT -p udp --dport "$port" -j ACCEPT >/dev/null 2>&1
-        iptables -D FORWARD -s "$vpn_ipv4_subnet" -j ACCEPT >/dev/null 2>&1
-        iptables -t nat -D POSTROUTING -s "$vpn_ipv4_subnet" -o $(yq e '.server.host_interface' config.yaml) -j MASQUERADE >/dev/null 2>&1
-        ip6tables -D INPUT -p udp --dport "$port" -j ACCEPT >/dev/null 2>&1
-        ip6tables -D FORWARD -s "$vpn_ipv6_subnet" -j ACCEPT >/dev/null 2>&1
-        ip6tables -t nat -D POSTROUTING -s "$vpn_ipv6_subnet" -o $(yq e '.server.host_interface' config.yaml) -j MASQUERADE >/dev/null 2>&1
-    fi
+    # Flush all nftables rules
+    nft flush ruleset
 }
 
 # Main installation logic
@@ -302,15 +293,15 @@ if [[ ! -e /etc/wireguard/wg0.conf ]]; then
     ### System Setup ###
 
     # Package installation
-    echo "Installing WireGuard packages..."
+    echo "Installing WireGuard and nftables packages..."
     if [[ "$os" == "ubuntu" ]]; then
         apt-get update
-        apt-get install -y wireguard qrencode
+        apt-get install -y wireguard qrencode nftables
     elif [[ "$os" == "debian" ]]; then
         apt-get update
-        apt-get install -y wireguard qrencode
+        apt-get install -y wireguard qrencode nftables
     elif [[ "$os" == "centos" || "$os" == "fedora" ]]; then
-        dnf install -y wireguard-tools qrencode
+        dnf install -y wireguard-tools qrencode nftables
     else
         echo "Error: Unsupported OS."
         exit 1
@@ -357,26 +348,8 @@ if [[ ! -e /etc/wireguard/wg0.conf ]]; then
     echo
     echo "WireGuard installation is ready to begin."
 
-    # Firewall detection
-    if ! systemctl is-active --quiet firewalld.service && ! hash iptables 2>/dev/null; then
-        if [[ "$os" == "centos" || "$os" == "fedora" ]]; then
-            firewall="firewalld"
-            echo "firewalld, which is required to manage routing tables, will also be installed."
-            dnf install -y firewalld
-        elif [[ "$os" == "debian" || "$os" == "ubuntu" ]]; then
-            firewall="iptables"
-        else
-            echo "Error: No supported firewall detected."
-            exit 1
-        fi
-    elif systemctl is-active --quiet firewalld.service; then
-        firewall="firewalld"
-    else
-        firewall="iptables"
-    fi
-
-    # Configure firewall before starting WireGuard
-    configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet" "$firewall"
+    # Configure firewall with nftables before starting WireGuard
+    configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet"
 
     # Enable IP forwarding (IPv4 and IPv6)
     sysctl -w net.ipv4.ip_forward=1
@@ -453,13 +426,6 @@ else
                 vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
                 vpn_ipv6_subnet="${server_ipv6_ip}/${server_ipv6_mask}"
 
-                # Firewall detection (for updates)
-                if systemctl is-active --quiet firewalld.service; then
-                    firewall="firewalld"
-                else
-                    firewall="iptables"
-                fi
-
                 # Check if server section changed
                 yq e '.server' config.yaml > /tmp/server_new.yaml
                 yq e '.server' /etc/wireguard/config.yaml.backup > /tmp/server_old.yaml
@@ -473,9 +439,9 @@ else
                     cp config.yaml /etc/wireguard/config.yaml.backup
                     chmod 600 /etc/wireguard/config.yaml.backup
 
-                    # Clear and reconfigure firewall rules
-                    clear_firewall_rules "$firewall"
-                    configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet" "$firewall"
+                    # Clear and reconfigure firewall rules with nftables
+                    clear_firewall_rules
+                    configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet"
 
                     # Display all client QR codes
                     echo "Updated client configurations:"
@@ -511,9 +477,9 @@ else
                         cp config.yaml /etc/wireguard/config.yaml.backup
                         chmod 600 /etc/wireguard/config.yaml.backup
 
-                        # Clear and reconfigure firewall rules (in case subnet changed in clients)
-                        clear_firewall_rules "$firewall"
-                        configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet" "$firewall"
+                        # Clear and reconfigure firewall rules with nftables
+                        clear_firewall_rules
+                        configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet"
 
                         # Display QR codes only for changed clients
                         echo "Updated client configurations:"
@@ -545,8 +511,7 @@ else
                 port=$(yq e '.server.port' config.yaml)
                 vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
                 vpn_ipv6_subnet="${server_ipv6_ip}/${server_ipv6_mask}"
-                firewall="iptables" # Default for no backup case
-                configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet" "$firewall"
+                configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet"
 
                 # Display all client QR codes
                 echo "Updated client configurations:"
@@ -583,9 +548,9 @@ else
             systemctl disable --now wg-quick@wg0
             rm -rf /etc/wireguard
             if [[ "$os" == "ubuntu" || "$os" == "debian" ]]; then
-                apt-get remove -y wireguard wireguard-tools
+                apt-get remove -y wireguard wireguard-tools nftables
             elif [[ "$os" == "centos" || "$os" == "fedora" ]]; then
-                dnf remove -y wireguard-tools
+                dnf remove -y wireguard-tools nftables
             fi
             echo "WireGuard removed."
             ;;
