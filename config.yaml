@@ -1,6 +1,7 @@
 # WireGuard Server and Client Configuration
 
 server:
+  interface_name: vpn0
   # UDP port for WireGuard to listen on
   port: 51820
 
