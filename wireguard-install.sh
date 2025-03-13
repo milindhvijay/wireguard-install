@@ -25,14 +25,14 @@ fi
 # Function to generate full server and client configurations from YAML
 generate_full_configs() {
     # Parse server configuration from YAML
-    interface_name=$(yq e '.server.interface_name' config.yaml)
-    # Default to wg0 if interface_name is not specified or null
-    [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
     port=$(yq e '.server.port' config.yaml)
     mtu=$(yq e '.server.mtu' config.yaml)
     # Default to 1420 if server mtu is not specified or null
     [[ "$mtu" == "null" || -z "$mtu" ]] && mtu=1420
     public_endpoint=$(yq e '.server.public_endpoint' config.yaml)
+    interface_name=$(yq e '.server.interface_name' config.yaml)
+    # Default to wg0 if interface_name is not specified or null
+    [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
     ipv4_enabled=$(yq e '.server.ipv4.enabled' config.yaml)
     server_ipv4=$(yq e '.server.ipv4.address' config.yaml)
     server_ipv4_ip=$(echo "$server_ipv4" | cut -d '/' -f 1)
@@ -51,8 +51,8 @@ generate_full_configs() {
     server_private_key=$(wg genkey)
     server_public_key=$(echo "$server_private_key" | wg pubkey)
 
-    # Create server configuration file
-    cat << EOF > /etc/wireguard/${interface_name}.conf
+    # Create server configuration file with dynamic interface name
+    cat << EOF > /etc/wireguard/"${interface_name}.conf"
 # Do not alter the commented lines
 # They are used by wireguard-install
 # ENDPOINT [to be set]
@@ -69,6 +69,9 @@ EOF
 
     # Temporary file for YAML updates
     cp config.yaml config.yaml.tmp
+
+    # Ensure wireguard-configs directory exists
+    mkdir -p "$(dirname "$0")/wireguard-configs"
 
     for i in $(seq 0 $(($number_of_clients - 1))); do
         client_name=$(yq e ".clients[$i].name" config.yaml)
@@ -98,8 +101,8 @@ EOF
         client_public_key=$(echo "$client_private_key" | wg pubkey)
         psk=$(wg genpsk)
 
-        # Append client to server conf
-        cat << EOF >> /etc/wireguard/${interface_name}.conf
+        # Append client to server config
+        cat << EOF >> /etc/wireguard/"${interface_name}.conf"
 
 # BEGIN_PEER $client_name
 [Peer]
@@ -109,8 +112,8 @@ AllowedIPs = ${base_ipv4}.${octet}/32$( [[ "$ipv6_enabled" == "true" && $(ip -6 
 # END_PEER $client_name
 EOF
 
-        # Create client configuration file
-        cat << EOF > ~/"${client_name}-${interface_name}.conf"
+        # Create client configuration file in wireguard-configs subfolder
+        cat << EOF > "$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
 [Interface]
 Address = $client_ipv4$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", $client_ipv6" )
 DNS = $client_dns
@@ -124,23 +127,25 @@ AllowedIPs = $client_allowed_ips
 Endpoint = [to be set]:$port
 PersistentKeepalive = $client_persistent_keepalive
 EOF
-        chmod 600 ~/"${client_name}-${interface_name}.conf"
+        chmod 600 "$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
     done
 
     # Replace original YAML with updated version
     mv config.yaml.tmp config.yaml
 
-    # Set secure permissions for server conf
-    chmod 600 /etc/wireguard/${interface_name}.conf
+    # Set secure permissions for server config
+    chmod 600 /etc/wireguard/"${interface_name}.conf"
 
     # Detect public endpoint, preferring IPv6
     if [[ -n "$public_endpoint" && "$public_endpoint" != "null" ]]; then
         endpoint="$public_endpoint"
     else
+        # Check for global IPv6 address
         endpoint=$(ip -6 addr show scope global | grep -oP 'inet6 \K[0-9a-f:]+' | head -n 1)
         if [[ -n "$endpoint" ]]; then
-            endpoint="[$endpoint]"
+            endpoint="[$endpoint]" # Wrap IPv6 in brackets for WireGuard
         else
+            # Fall back to IPv4
             endpoint=$(wget -qO- http://ip1.dynupdate.no-ip.com/ || curl -s http://ip1.dynupdate.no-ip.com/)
             if [[ -z "$endpoint" ]]; then
                 echo "Error: Could not auto-detect public IP (neither IPv6 nor IPv4)."
@@ -150,17 +155,18 @@ EOF
     fi
 
     # Update client configuration files with the endpoint
-    for client_conf in ~/*-${interface_name}.conf; do
+    for client_conf in "$(dirname "$0")/wireguard-configs"/*-"${interface_name}.conf"; do
         sed -i "s/Endpoint = \[to be set\]:$port/Endpoint = $endpoint:$port/" "$client_conf"
     done
 }
 
 # Function to regenerate specific client configurations
 generate_client_configs() {
-    local changed_clients=("$@")
-    interface_name=$(yq e '.server.interface_name' config.yaml)
-    [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
+    local changed_clients=("$@") # Array of client indices to regenerate
     port=$(yq e '.server.port' config.yaml)
+    interface_name=$(yq e '.server.interface_name' config.yaml)
+    # Default to wg0 if interface_name is not specified or null
+    [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
     ipv4_enabled=$(yq e '.server.ipv4.enabled' config.yaml)
     server_ipv4=$(yq e '.server.ipv4.address' config.yaml)
     server_ipv4_ip=$(echo "$server_ipv4" | cut -d '/' -f 1)
@@ -174,17 +180,19 @@ generate_client_configs() {
     vpn_ipv6_subnet="${server_ipv6_ip}/${server_ipv6_mask}"
     base_ipv6=$(echo "$server_ipv6_ip" | sed 's/:[0-9a-f]*$//')
     server_ipv6_last_segment=$(echo "$server_ipv6_ip" | grep -o '[0-9a-f]*$')
-    server_public_key=$(wg show ${interface_name} public-key)
+    server_public_key=$(wg show "$interface_name" public-key)
 
     # Detect public endpoint, preferring IPv6
     public_endpoint=$(yq e '.server.public_endpoint' config.yaml)
     if [[ -n "$public_endpoint" && "$public_endpoint" != "null" ]]; then
         endpoint="$public_endpoint"
     else
+        # Check for global IPv6 address
         endpoint=$(ip -6 addr show scope global | grep -oP 'inet6 \K[0-9a-f:]+' | head -n 1)
         if [[ -n "$endpoint" ]]; then
-            endpoint="[$endpoint]"
+            endpoint="[$endpoint]" # Wrap IPv6 in brackets for WireGuard
         else
+            # Fall back to IPv4
             endpoint=$(wget -qO- http://ip1.dynupdate.no-ip.com/ || curl -s http://ip1.dynupdate.no-ip.com/)
             if [[ -z "$endpoint" ]]; then
                 echo "Error: Could not auto-detect public IP (neither IPv6 nor IPv4)."
@@ -196,10 +204,14 @@ generate_client_configs() {
     # Temporary file for YAML updates
     cp config.yaml config.yaml.tmp
 
+    # Ensure wireguard-configs directory exists
+    mkdir -p "$(dirname "$0")/wireguard-configs"
+
     for i in "${changed_clients[@]}"; do
         client_name=$(yq e ".clients[$i].name" config.yaml)
         client_dns=$(yq e ".clients[$i].dns" config.yaml)
         client_mtu=$(yq e ".clients[$i].mtu" config.yaml)
+        # Default to 1420 if mtu is not specified or null
         [[ "$client_mtu" == "null" || -z "$client_mtu" ]] && client_mtu=1420
         client_allowed_ips=$(yq e ".clients[$i].allowed_ips" config.yaml)
         client_persistent_keepalive=$(yq e ".clients[$i].persistent_keepalive" config.yaml)
@@ -223,18 +235,18 @@ generate_client_configs() {
         client_public_key=$(echo "$client_private_key" | wg pubkey)
         psk=$(wg genpsk)
 
-        # Remove old peer section from server conf based on name (if it exists)
+        # Remove old peer section from server config based on name (if it exists)
         old_name=$(yq e ".clients[$i].name" /etc/wireguard/config.yaml.backup)
         if [[ "$old_name" != "$client_name" && -n "$old_name" ]]; then
-            sed -i "/# BEGIN_PEER $old_name/,/# END_PEER $old_name/d" /etc/wireguard/${interface_name}.conf
-            rm -f ~/"${old_name}-${interface_name}.conf"
+            sed -i "/# BEGIN_PEER $old_name/,/# END_PEER $old_name/d" /etc/wireguard/"${interface_name}.conf"
+            rm -f "$(dirname "$0")/wireguard-configs/${old_name}-${interface_name}.conf"
             echo "Removed old client configuration for '$old_name'."
         else
-            sed -i "/# BEGIN_PEER $client_name/,/# END_PEER $client_name/d" /etc/wireguard/${interface_name}.conf
+            sed -i "/# BEGIN_PEER $client_name/,/# END_PEER $client_name/d" /etc/wireguard/"${interface_name}.conf"
         fi
 
-        # Append updated client to server conf
-        cat << EOF >> /etc/wireguard/${interface_name}.conf
+        # Append updated client to server config
+        cat << EOF >> /etc/wireguard/"${interface_name}.conf"
 
 # BEGIN_PEER $client_name
 [Peer]
@@ -244,8 +256,8 @@ AllowedIPs = ${base_ipv4}.${octet}/32$( [[ "$ipv6_enabled" == "true" && $(ip -6 
 # END_PEER $client_name
 EOF
 
-        # Regenerate client configuration file
-        cat << EOF > ~/"${client_name}-${interface_name}.conf"
+        # Regenerate client configuration file in wireguard-configs subfolder
+        cat << EOF > "$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
 [Interface]
 Address = $client_ipv4$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", $client_ipv6" )
 DNS = $client_dns
@@ -259,7 +271,7 @@ AllowedIPs = $client_allowed_ips
 Endpoint = $endpoint:$port
 PersistentKeepalive = $client_persistent_keepalive
 EOF
-        chmod 600 ~/"${client_name}-${interface_name}.conf"
+        chmod 600 "$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
     done
 
     # Replace original YAML with updated version
@@ -591,6 +603,12 @@ else
                     nft -f /etc/nftables.conf
                     echo "Updated /etc/nftables.conf to remove WireGuard rules."
                 fi
+            fi
+
+            # Remove the wireguard-configs directory
+            if [[ -d "$(dirname "$0")/wireguard-configs" ]]; then
+                rm -rf "$(dirname "$0")/wireguard-configs"
+                echo "Removed client configuration directory: $(dirname "$0")/wireguard-configs"
             fi
 
             rm -rf /etc/wireguard
