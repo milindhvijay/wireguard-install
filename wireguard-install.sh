@@ -410,11 +410,15 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     fi
 
     echo "WireGuard setup complete. Here are the client configurations:"
-    for client_conf in ~/*-${interface_name}.conf; do
-        echo -e "\nClient: $(basename "$client_conf")"
-        qrencode -t ANSI256UTF8 < "$client_conf"
-        echo "Configuration file saved at: $client_conf"
-    done
+    if ls "$(dirname "$0")/wireguard-configs"/*-"${interface_name}.conf" >/dev/null 2>&1; then
+        for client_conf in "$(dirname "$0")/wireguard-configs"/*-"${interface_name}.conf"; do
+            echo -e "\nClient: $(basename "$client_conf")"
+            qrencode -t ANSI256UTF8 < "$client_conf"
+            echo "Configuration file saved at: $client_conf"
+        done
+    else
+        echo "No client configuration files found in $(dirname "$0")/wireguard-configs/."
+    fi
 
 else
     ### Management Menu ###
@@ -477,11 +481,15 @@ else
 
                     # Display all client QR codes
                     echo "Updated client configurations:"
-                    for client_conf in ~/*-"${interface_name}.conf"; do
-                        echo -e "\nClient: $(basename "$client_conf")"
-                        qrencode -t ANSI256UTF8 < "$client_conf"
-                        echo "Configuration file saved at: $client_conf"
-                    done
+                    if ls "$(dirname "$0")/wireguard-configs"/*-"${interface_name}.conf" >/dev/null 2>&1; then
+                        for client_conf in "$(dirname "$0")/wireguard-configs"/*-"${interface_name}.conf"; do
+                            echo -e "\nClient: $(basename "$client_conf")"
+                            qrencode -t ANSI256UTF8 < "$client_conf"
+                            echo "Configuration file saved at: $client_conf"
+                        done
+                    else
+                        echo "No client configuration files found in $(dirname "$0")/wireguard-configs/."
+                    fi
                 else
                     # Check for changes in clients
                     changed_clients=()
@@ -517,10 +525,14 @@ else
                         echo "Updated client configurations:"
                         for i in "${changed_clients[@]}"; do
                             client_name=$(yq e ".clients[$i].name" config.yaml)
-                            client_conf=~/"${client_name}-${interface_name}.conf"
-                            echo -e "\nClient: $(basename "$client_conf")"
-                            qrencode -t ANSI256UTF8 < "$client_conf"
-                            echo "Configuration file saved at: $client_conf"
+                            client_conf="$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
+                            if [[ -f "$client_conf" ]]; then
+                                echo -e "\nClient: $(basename "$client_conf")"
+                                qrencode -t ANSI256UTF8 < "$client_conf"
+                                echo "Configuration file saved at: $client_conf"
+                            else
+                                echo "Warning: Configuration file for $client_name not found at $client_conf."
+                            fi
                         done
                     else
                         echo "No actionable changes detected in client configurations."
@@ -545,11 +557,15 @@ else
 
                 # Display all client QR codes
                 echo "Updated client configurations:"
-                for client_conf in ~/*-"${interface_name}.conf"; do
-                    echo -e "\nClient: $(basename "$client_conf")"
-                    qrencode -t ANSI256UTF8 < "$client_conf"
-                    echo "Configuration file saved at: $client_conf"
-                done
+                if ls "$(dirname "$0")/wireguard-configs"/*-"${interface_name}.conf" >/dev/null 2>&1; then
+                    for client_conf in "$(dirname "$0")/wireguard-configs"/*-"${interface_name}.conf"; do
+                        echo -e "\nClient: $(basename "$client_conf")"
+                        qrencode -t ANSI256UTF8 < "$client_conf"
+                        echo "Configuration file saved at: $client_conf"
+                    done
+                else
+                    echo "No client configuration files found in $(dirname "$0")/wireguard-configs/."
+                fi
             fi
 
             # Restart WireGuard service to apply new configuration
