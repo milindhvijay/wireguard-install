@@ -66,6 +66,8 @@ EOF
         client_name=$(yq e ".clients[$i].name" config.yaml)
         client_dns=$(yq e ".clients[$i].dns" config.yaml)
         client_mtu=$(yq e ".clients[$i].mtu" config.yaml)
+        # Default to 1420 if mtu is not specified or null
+        [[ "$client_mtu" == "null" || -z "$client_mtu" ]] && client_mtu=1420
         client_allowed_ips=$(yq e ".clients[$i].allowed_ips" config.yaml)
         client_persistent_keepalive=$(yq e ".clients[$i].persistent_keepalive" config.yaml)
 
@@ -99,7 +101,7 @@ EOF
 Address = $client_ipv4$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", $client_ipv6" )
 DNS = $client_dns
 PrivateKey = $client_private_key
-$( [[ "$client_mtu" != "null" && -n "$mtu" ]] && echo "MTU = $client_mtu" )
+MTU = $client_mtu
 
 [Peer]
 PublicKey = $server_public_key
@@ -180,6 +182,8 @@ generate_client_configs() {
         client_name=$(yq e ".clients[$i].name" config.yaml)
         client_dns=$(yq e ".clients[$i].dns" config.yaml)
         client_mtu=$(yq e ".clients[$i].mtu" config.yaml)
+        # Default to 1420 if mtu is not specified or null
+        [[ "$client_mtu" == "null" || -z "$client_mtu" ]] && client_mtu=1420
         client_allowed_ips=$(yq e ".clients[$i].allowed_ips" config.yaml)
         client_persistent_keepalive=$(yq e ".clients[$i].persistent_keepalive" config.yaml)
 
@@ -223,7 +227,7 @@ EOF
 Address = $client_ipv4$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", $client_ipv6" )
 DNS = $client_dns
 PrivateKey = $client_private_key
-$( [[ "$client_mtu" != "null" && -n "$client_mtu" ]] && echo "MTU = $client_mtu" )
+MTU = $client_mtu
 
 [Peer]
 PublicKey = $server_public_key
