@@ -27,6 +27,8 @@ generate_full_configs() {
     # Parse server configuration from YAML
     port=$(yq e '.server.port' config.yaml)
     mtu=$(yq e '.server.mtu' config.yaml)
+    # Default to 1420 if server mtu is not specified or null
+    [[ "$mtu" == "null" || -z "$mtu" ]] && mtu=1420
     public_endpoint=$(yq e '.server.public_endpoint' config.yaml)
     ipv4_enabled=$(yq e '.server.ipv4.enabled' config.yaml)
     server_ipv4=$(yq e '.server.ipv4.address' config.yaml)
@@ -56,7 +58,7 @@ generate_full_configs() {
 Address = $server_ipv4$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", $server_ipv6" )
 PrivateKey = $server_private_key
 ListenPort = $port
-$( [[ "$mtu" != "null" && -n "$mtu" ]] && echo "MTU = $mtu" )
+MTU = $mtu
 EOF
 
     # Generate all client configurations
@@ -66,7 +68,7 @@ EOF
         client_name=$(yq e ".clients[$i].name" config.yaml)
         client_dns=$(yq e ".clients[$i].dns" config.yaml)
         client_mtu=$(yq e ".clients[$i].mtu" config.yaml)
-        # Default to 1420 if mtu is not specified or null
+        # Default to 1420 if client mtu is not specified or null
         [[ "$client_mtu" == "null" || -z "$client_mtu" ]] && client_mtu=1420
         client_allowed_ips=$(yq e ".clients[$i].allowed_ips" config.yaml)
         client_persistent_keepalive=$(yq e ".clients[$i].persistent_keepalive" config.yaml)
