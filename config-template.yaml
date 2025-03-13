@@ -49,6 +49,7 @@ server:
 
     # The IPv4 address and subnet mask for the server in CIDR notation.
     address: 10.0.1.1/24
+    nat: true
 
   # IPv6 configuration for the VPN server.
   ipv6:
@@ -58,6 +59,7 @@ server:
     enabled: false
 
     address: fd00::1/64
+    nat: true
 
 # List of client configurations.
 # Each client gets its own configuration file and keys. Add as many clients as needed.
