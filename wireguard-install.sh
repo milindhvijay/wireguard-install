@@ -159,9 +159,14 @@ EOF
     # Set secure permissions for server config
     chmod 600 /etc/wireguard/"${interface_name}.conf"
 
-    # Detect public endpoint, preferring IPv6
+    # Detect public endpoint, preferring IPv6, and format it correctly
     if [[ -n "$public_endpoint" && "$public_endpoint" != "null" ]]; then
-        endpoint="$public_endpoint"
+        # Check if public_endpoint is an IPv6 address (contains colons, no dots)
+        if [[ "$public_endpoint" =~ : && ! "$public_endpoint" =~ \. ]]; then
+            endpoint="[$public_endpoint]" # Wrap IPv6 in brackets
+        else
+            endpoint="$public_endpoint" # Use as-is for IPv4 or hostname
+        fi
     else
         # Check for global IPv6 address
         endpoint=$(wget -qO- https://api6.ipify.org || curl -s https://api6.ipify.org)
@@ -205,10 +210,15 @@ generate_client_configs() {
     server_ipv6_last_segment=$(echo "$server_ipv6_ip" | grep -o '[0-9a-f]*$')
     server_public_key=$(wg show "$interface_name" public-key)
 
-    # Detect public endpoint, preferring IPv6
+    # Detect public endpoint, preferring IPv6, and format it correctly
     public_endpoint=$(yq e '.server.public_endpoint' config.yaml)
     if [[ -n "$public_endpoint" && "$public_endpoint" != "null" ]]; then
-        endpoint="$public_endpoint"
+        # Check if public_endpoint is an IPv6 address (contains colons, no dots)
+        if [[ "$public_endpoint" =~ : && ! "$public_endpoint" =~ \. ]]; then
+            endpoint="[$public_endpoint]" # Wrap IPv6 in brackets
+        else
+            endpoint="$public_endpoint" # Use as-is for IPv4 or hostname
+        fi
     else
         # Check for global IPv6 address
         endpoint=$(wget -qO- https://api6.ipify.org || curl -s https://api6.ipify.org)
