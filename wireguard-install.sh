@@ -50,7 +50,7 @@ generate_full_configs() {
     # Ensure keys directory exists
     mkdir -p "$(dirname "$0")/keys"
 
-    # Generate and save server keys
+    # Generate and save server keys (directly in keys/)
     wg genkey > "$(dirname "$0")/keys/server-${interface_name}-private.key"
     server_private_key=$(cat "$(dirname "$0")/keys/server-${interface_name}-private.key")
     echo "$server_private_key" | wg pubkey > "$(dirname "$0")/keys/server-${interface_name}-public.key"
@@ -102,16 +102,20 @@ EOF
             yq e -i ".clients[$i].ipv6_address = \"$client_ipv6\"" config.yaml.tmp
         fi
 
-        # Generate and save client keys
-        wg genkey > "$(dirname "$0")/keys/${client_name}-${interface_name}-private.key"
-        client_private_key=$(cat "$(dirname "$0")/keys/${client_name}-${interface_name}-private.key")
-        echo "$client_private_key" | wg pubkey > "$(dirname "$0")/keys/${client_name}-${interface_name}-public.key"
-        client_public_key=$(cat "$(dirname "$0")/keys/${client_name}-${interface_name}-public.key")
-        wg genpsk > "$(dirname "$0")/keys/${client_name}-${interface_name}-psk.key"
-        psk=$(cat "$(dirname "$0")/keys/${client_name}-${interface_name}-psk.key")
-        chmod 600 "$(dirname "$0")/keys/${client_name}-${interface_name}-private.key" \
-                  "$(dirname "$0")/keys/${client_name}-${interface_name}-public.key" \
-                  "$(dirname "$0")/keys/${client_name}-${interface_name}-psk.key"
+        # Create client-specific key subfolder
+        client_key_dir="$(dirname "$0")/keys/${client_name}-${interface_name}"
+        mkdir -p "$client_key_dir"
+
+        # Generate and save client keys in the subfolder
+        wg genkey > "$client_key_dir/${client_name}-${interface_name}-private.key"
+        client_private_key=$(cat "$client_key_dir/${client_name}-${interface_name}-private.key")
+        echo "$client_private_key" | wg pubkey > "$client_key_dir/${client_name}-${interface_name}-public.key"
+        client_public_key=$(cat "$client_key_dir/${client_name}-${interface_name}-public.key")
+        wg genpsk > "$client_key_dir/${client_name}-${interface_name}-psk.key"
+        psk=$(cat "$client_key_dir/${client_name}-${interface_name}-psk.key")
+        chmod 600 "$client_key_dir/${client_name}-${interface_name}-private.key" \
+                  "$client_key_dir/${client_name}-${interface_name}-public.key" \
+                  "$client_key_dir/${client_name}-${interface_name}-psk.key"
 
         # Append client to server config
         cat << EOF >> /etc/wireguard/"${interface_name}.conf"
@@ -153,12 +157,12 @@ EOF
         endpoint="$public_endpoint"
     else
         # Check for global IPv6 address
-        endpoint=$(ip -6 addr show scope global | grep -oP 'inet6 \K[0-9a-f:]+' | head -n 1)
+        endpoint=$(wget -qO- https://api6.ipify.org || curl -s https://api6.ipify.org)
         if [[ -n "$endpoint" ]]; then
             endpoint="[$endpoint]" # Wrap IPv6 in brackets for WireGuard
         else
             # Fall back to IPv4
-            endpoint=$(wget -qO- http://ip1.dynupdate.no-ip.com/ || curl -s http://ip1.dynupdate.no-ip.com/)
+            endpoint=$(wget -qO- https://api4.ipify.org || curl -s https://api4.ipify.org)
             if [[ -z "$endpoint" ]]; then
                 echo "Error: Could not auto-detect public IP (neither IPv6 nor IPv4)."
                 return 1
@@ -200,12 +204,12 @@ generate_client_configs() {
         endpoint="$public_endpoint"
     else
         # Check for global IPv6 address
-        endpoint=$(ip -6 addr show scope global | grep -oP 'inet6 \K[0-9a-f:]+' | head -n 1)
+        endpoint=$(wget -qO- https://api6.ipify.org || curl -s https://api6.ipify.org)
         if [[ -n "$endpoint" ]]; then
             endpoint="[$endpoint]" # Wrap IPv6 in brackets for WireGuard
         else
             # Fall back to IPv4
-            endpoint=$(wget -qO- http://ip1.dynupdate.no-ip.com/ || curl -s http://ip1.dynupdate.no-ip.com/)
+            endpoint=$(wget -qO- https://api4.ipify.org || curl -s https://api4.ipify.org)
             if [[ -z "$endpoint" ]]; then
                 echo "Error: Could not auto-detect public IP (neither IPv6 nor IPv4)."
                 return 1
@@ -243,25 +247,27 @@ generate_client_configs() {
             yq e -i ".clients[$i].ipv6_address = \"$client_ipv6\"" config.yaml.tmp
         fi
 
-        # Generate and save client keys
-        wg genkey > "$(dirname "$0")/keys/${client_name}-${interface_name}-private.key"
-        client_private_key=$(cat "$(dirname "$0")/keys/${client_name}-${interface_name}-private.key")
-        echo "$client_private_key" | wg pubkey > "$(dirname "$0")/keys/${client_name}-${interface_name}-public.key"
-        client_public_key=$(cat "$(dirname "$0")/keys/${client_name}-${interface_name}-public.key")
-        wg genpsk > "$(dirname "$0")/keys/${client_name}-${interface_name}-psk.key"
-        psk=$(cat "$(dirname "$0")/keys/${client_name}-${interface_name}-psk.key")
-        chmod 600 "$(dirname "$0")/keys/${client_name}-${interface_name}-private.key" \
-                  "$(dirname "$0")/keys/${client_name}-${interface_name}-public.key" \
-                  "$(dirname "$0")/keys/${client_name}-${interface_name}-psk.key"
+        # Create client-specific key subfolder
+        client_key_dir="$(dirname "$0")/keys/${client_name}-${interface_name}"
+        mkdir -p "$client_key_dir"
+
+        # Generate and save client keys in the subfolder
+        wg genkey > "$client_key_dir/${client_name}-${interface_name}-private.key"
+        client_private_key=$(cat "$client_key_dir/${client_name}-${interface_name}-private.key")
+        echo "$client_private_key" | wg pubkey > "$client_key_dir/${client_name}-${interface_name}-public.key"
+        client_public_key=$(cat "$client_key_dir/${client_name}-${interface_name}-public.key")
+        wg genpsk > "$client_key_dir/${client_name}-${interface_name}-psk.key"
+        psk=$(cat "$client_key_dir/${client_name}-${interface_name}-psk.key")
+        chmod 600 "$client_key_dir/${client_name}-${interface_name}-private.key" \
+                  "$client_key_dir/${client_name}-${interface_name}-public.key" \
+                  "$client_key_dir/${client_name}-${interface_name}-psk.key"
 
         # Remove old peer section from server config based on name (if it exists)
         old_name=$(yq e ".clients[$i].name" /etc/wireguard/config.yaml.backup)
         if [[ "$old_name" != "$client_name" && -n "$old_name" ]]; then
             sed -i "/# BEGIN_PEER $old_name/,/# END_PEER $old_name/d" /etc/wireguard/"${interface_name}.conf"
             rm -f "$(dirname "$0")/wireguard-configs/${old_name}-${interface_name}.conf"
-            rm -f "$(dirname "$0")/keys/${old_name}-${interface_name}-private.key" \
-                  "$(dirname "$0")/keys/${old_name}-${interface_name}-public.key" \
-                  "$(dirname "$0")/keys/${old_name}-${interface_name}-psk.key"
+            rm -rf "$(dirname "$0")/keys/${old_name}-${interface_name}"
             echo "Removed old client configuration and keys for '$old_name'."
         else
             sed -i "/# BEGIN_PEER $client_name/,/# END_PEER $client_name/d" /etc/wireguard/"${interface_name}.conf"
@@ -654,7 +660,7 @@ else
                     rm -f /etc/nftables.conf
                     systemctl disable nftables
                     systemctl stop nftables
-                    echo "Removed /etc/nftables.conf and disabled nftables service (no other rules present)."
+                    echo "Removed /etc/nftables.conf and disabled Fancy seeing you here! nftables service (no other rules present)."
                 else
                     # Reload nftables to apply the updated rules
                     nft -f /etc/nftables.conf
