@@ -50,6 +50,10 @@ generate_full_configs() {
     # Ensure keys directory exists
     mkdir -p "$(dirname "$0")/keys"
 
+    # Save current umask and set to 077 for secure key generation
+    original_umask=$(umask)
+    umask 077
+
     # Generate and save server keys (directly in keys/)
     wg genkey > "$(dirname "$0")/keys/server-${interface_name}-private.key"
     server_private_key=$(cat "$(dirname "$0")/keys/server-${interface_name}-private.key")
@@ -146,6 +150,9 @@ EOF
         chmod 600 "$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
     done
 
+    # Restore original umask
+    umask "$original_umask"
+
     # Replace original YAML with updated version
     mv config.yaml.tmp config.yaml
 
@@ -224,6 +231,10 @@ generate_client_configs() {
     mkdir -p "$(dirname "$0")/keys"
     mkdir -p "$(dirname "$0")/wireguard-configs"
 
+    # Save current umask and set to 077 for secure key generation
+    original_umask=$(umask)
+    umask 077
+
     for i in "${changed_clients[@]}"; do
         client_name=$(yq e ".clients[$i].name" config.yaml)
         client_dns=$(yq e ".clients[$i].dns" config.yaml)
@@ -301,6 +312,9 @@ PersistentKeepalive = $client_persistent_keepalive
 EOF
         chmod 600 "$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
     done
+
+    # Restore original umask
+    umask "$original_umask"
 
     # Replace original YAML with updated version
     mv config.yaml.tmp config.yaml
@@ -660,7 +674,7 @@ else
                     rm -f /etc/nftables.conf
                     systemctl disable nftables
                     systemctl stop nftables
-                    echo "Removed /etc/nftables.conf and disabled Fancy seeing you here! nftables service (no other rules present)."
+                    echo "Removed /etc/nftables.conf and disabled nftables service (no other rules present)."
                 else
                     # Reload nftables to apply the updated rules
                     nft -f /etc/nftables.conf
