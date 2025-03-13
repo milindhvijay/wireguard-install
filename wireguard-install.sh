@@ -410,26 +410,26 @@ else
                 exit 1
             fi
 
+            # Define variables needed for firewall and config generation
+            port=$(yq e '.server.port' config.yaml)
+            ipv4_enabled=$(yq e '.server.ipv4.enabled' config.yaml)
+            server_ipv4=$(yq e '.server.ipv4.address' config.yaml)
+            server_ipv4_ip=$(echo "$server_ipv4" | cut -d '/' -f 1)
+            server_ipv4_mask=$(echo "$server_ipv4" | cut -d '/' -f 2)
+            base_ipv4=$(echo "$server_ipv4_ip" | cut -d '.' -f 1-3)
+            ipv6_enabled=$(yq e '.server.ipv6.enabled' config.yaml)
+            server_ipv6=$(yq e '.server.ipv6.address' config.yaml)
+            server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
+            server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
+            vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
+            vpn_ipv6_subnet="${server_ipv6_ip}/${server_ipv6_mask}"
+
             # Compare with previous YAML backup
             if [[ -f /etc/wireguard/config.yaml.backup ]]; then
                 if cmp -s config.yaml /etc/wireguard/config.yaml.backup; then
                     echo "No changes detected in config.yaml. No action taken."
                     exit 0
                 fi
-
-                # Define variables needed for firewall
-                port=$(yq e '.server.port' config.yaml)
-                ipv4_enabled=$(yq e '.server.ipv4.enabled' config.yaml)
-                server_ipv4=$(yq e '.server.ipv4.address' config.yaml)
-                server_ipv4_ip=$(echo "$server_ipv4" | cut -d '/' -f 1)
-                server_ipv4_mask=$(echo "$server_ipv4" | cut -d '/' -f 2)
-                base_ipv4=$(echo "$server_ipv4_ip" | cut -d '.' -f 1-3)
-                ipv6_enabled=$(yq e '.server.ipv6.enabled' config.yaml)
-                server_ipv6=$(yq e '.server.ipv6.address' config.yaml)
-                server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
-                server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
-                vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
-                vpn_ipv6_subnet="${server_ipv6_ip}/${server_ipv6_mask}"
 
                 # Check if server section changed
                 yq e '.server' config.yaml > /tmp/server_new.yaml
@@ -512,10 +512,8 @@ else
                 cp config.yaml /etc/wireguard/config.yaml.backup
                 chmod 600 /etc/wireguard/config.yaml.backup
 
-                # Define variables for firewall
-                port=$(yq e '.server.port' config.yaml)
-                vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
-                vpn_ipv6_subnet="${server_ipv6_ip}/${server_ipv6_mask}"
+                # Clear and reconfigure firewall rules with nftables
+                clear_firewall_rules
                 configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet"
 
                 # Display all client QR codes
