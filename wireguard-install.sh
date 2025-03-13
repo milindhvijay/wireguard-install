@@ -186,7 +186,7 @@ PublicKey = $server_public_key
 PresharedKey = $psk
 AllowedIPs = $client_allowed_ips
 Endpoint = $endpoint:$port
-PersistentKeepalive = $client_persistent_keepalive
+$( [[ "$client_persistent_keepalive" != "null" && -n "$client_persistent_keepalive" ]] && echo "PersistentKeepalive = $client_persistent_keepalive" )
 EOF
         chmod 600 "$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
     done
@@ -318,7 +318,7 @@ PublicKey = $server_public_key
 PresharedKey = $psk
 AllowedIPs = $client_allowed_ips
 Endpoint = $endpoint:$port
-PersistentKeepalive = $client_persistent_keepalive
+$( [[ "$client_persistent_keepalive" != "null" && -n "$client_persistent_keepalive" ]] && echo "PersistentKeepalive = $client_persistent_keepalive" )
 EOF
         chmod 600 "$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
     done
