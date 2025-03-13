@@ -259,7 +259,7 @@ configure_firewall() {
         return 1
     fi
 
-    # Create nftables configuration file with no extra line space between rules
+    # Create nftables configuration file
     cat << EOF > /etc/nftables.conf
 #!/usr/sbin/nft -f
 
@@ -268,7 +268,11 @@ flush ruleset
 table inet wireguard {
     chain postrouting {
         type nat hook postrouting priority 100; policy accept;
-        $( [[ "$ipv4_enabled" == "true" && "$ipv4_dynamic" == "true" ]] && echo "ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" masquerade persistent" || [[ "$ipv4_enabled" == "true" && "$ipv4_dynamic" != "true" && -n "$server_ipv4_static" ]] && echo "ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" snat to $server_ipv4_static persistent" )$( [[ "$ipv6_enabled" == "true" && "$ipv6_dynamic" == "true" ]] && echo -n "; ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" masquerade persistent" || [[ "$ipv6_enabled" == "true" && "$ipv6_dynamic" != "true" && -n "$server_ipv6_static" ]] && echo -n "; ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" snat to $server_ipv6_static persistent" )
+        # Use masquerade for dynamic IPs, SNAT for static IPs
+        $( [[ "$ipv4_enabled" == "true" && "$ipv4_dynamic" == "true" ]] && echo "ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" masquerade persistent" )
+        $( [[ "$ipv4_enabled" == "true" && "$ipv4_dynamic" != "true" && -n "$server_ipv4_static" ]] && echo "ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" snat to $server_ipv4_static persistent" )
+        $( [[ "$ipv6_enabled" == "true" && "$ipv6_dynamic" == "true" ]] && echo "ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" masquerade persistent" )
+        $( [[ "$ipv6_enabled" == "true" && "$ipv6_dynamic" != "true" && -n "$server_ipv6_static" ]] && echo "ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" snat to $server_ipv6_static persistent" )
     }
 }
 EOF
