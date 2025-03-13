@@ -567,6 +567,32 @@ else
             # Default to wg0 if interface_name is not specified or null
             [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
             systemctl disable --now wg-quick@"$interface_name"
+
+            # Stop and disable nftables if it’s only used for WireGuard, or clean up WireGuard rules
+            if [[ -f /etc/nftables.conf ]]; then
+                echo "Cleaning up WireGuard-specific nftables rules..."
+                # Remove the wireguard table from the running configuration
+                nft delete table inet wireguard 2>/dev/null || echo "No WireGuard table found in running config, skipping."
+
+                # Backup the original nftables.conf
+                cp /etc/nftables.conf /etc/nftables.conf.backup-$(date +%F-%T)
+
+                # Remove WireGuard-specific section from /etc/nftables.conf
+                sed -i '/table inet wireguard {/,/}/d' /etc/nftables.conf
+
+                # If the file is now empty (or nearly empty), remove it and disable nftables
+                if [[ ! -s /etc/nftables.conf || $(grep -v '^#!/usr/sbin/nft -f' /etc/nftables.conf | grep -v '^flush ruleset' | wc -l) -eq 0 ]]; then
+                    rm -f /etc/nftables.conf
+                    systemctl disable nftables
+                    systemctl stop nftables
+                    echo "Removed /etc/nftables.conf and disabled nftables service (no other rules present)."
+                else
+                    # Reload nftables to apply the updated rules
+                    nft -f /etc/nftables.conf
+                    echo "Updated /etc/nftables.conf to remove WireGuard rules."
+                fi
+            fi
+
             rm -rf /etc/wireguard
             if [[ "$os" == "ubuntu" || "$os" == "debian" ]]; then
                 apt-get remove -y wireguard wireguard-tools nftables
