@@ -38,7 +38,7 @@ clients:
     allowed_ips: 0.0.0.0/0, ::/0
     persistent_keepalive: 25
 
-  - name: tablet
+  - name: tablet2
     dns: 1.1.1.1
     mtu: 1200
     allowed_ips: 0.0.0.0/0, ::/0
