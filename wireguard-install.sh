@@ -61,8 +61,11 @@ ListenPort = $port
 MTU = $mtu
 EOF
 
-    # Generate all client configurations
+    # Generate all client configurations and update YAML
     number_of_clients=$(yq e '.clients | length' config.yaml)
+
+    # Temporary file for YAML updates
+    cp config.yaml config.yaml.tmp
 
     for i in $(seq 0 $(($number_of_clients - 1))); do
         client_name=$(yq e ".clients[$i].name" config.yaml)
@@ -79,6 +82,12 @@ EOF
         if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
             client_ipv6_last_segment=$(printf "%x" $((16#$server_ipv6_last_segment + i + 1)))
             client_ipv6="${base_ipv6}:${client_ipv6_last_segment}/$server_ipv6_mask"
+        fi
+
+        # Update YAML with assigned client IPs
+        yq e -i ".clients[$i].ipv4_address = \"$client_ipv4\"" config.yaml.tmp
+        if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
+            yq e -i ".clients[$i].ipv6_address = \"$client_ipv6\"" config.yaml.tmp
         fi
 
         # Generate client keys
@@ -114,6 +123,9 @@ PersistentKeepalive = $client_persistent_keepalive
 EOF
         chmod 600 ~/"${client_name}-wg0.conf"
     done
+
+    # Replace original YAML with updated version
+    mv config.yaml.tmp config.yaml
 
     # Set secure permissions for wg0.conf
     chmod 600 /etc/wireguard/wg0.conf
@@ -180,6 +192,9 @@ generate_client_configs() {
         fi
     fi
 
+    # Temporary file for YAML updates
+    cp config.yaml config.yaml.tmp
+
     for i in "${changed_clients[@]}"; do
         client_name=$(yq e ".clients[$i].name" config.yaml)
         client_dns=$(yq e ".clients[$i].dns" config.yaml)
@@ -195,6 +210,12 @@ generate_client_configs() {
         if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
             client_ipv6_last_segment=$(printf "%x" $((16#$server_ipv6_last_segment + i + 1)))
             client_ipv6="${base_ipv6}:${client_ipv6_last_segment}/$server_ipv6_mask"
+        fi
+
+        # Update YAML with assigned client IPs
+        yq e -i ".clients[$i].ipv4_address = \"$client_ipv4\"" config.yaml.tmp
+        if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
+            yq e -i ".clients[$i].ipv6_address = \"$client_ipv6\"" config.yaml.tmp
         fi
 
         # Generate client keys
@@ -240,6 +261,9 @@ PersistentKeepalive = $client_persistent_keepalive
 EOF
         chmod 600 ~/"${client_name}-wg0.conf"
     done
+
+    # Replace original YAML with updated version
+    mv config.yaml.tmp config.yaml
 }
 
 # Function to configure firewall with nftables
