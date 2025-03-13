@@ -242,20 +242,20 @@ configure_firewall() {
     local vpn_ipv4_subnet="$2"
     local vpn_ipv6_subnet="$3"
     local host_interface=$(yq e '.server.host_interface' config.yaml)
-    local ipv4_dynamic=$(yq e '.server.ipv4.dynamic' config.yaml)
-    local ipv6_dynamic=$(yq e '.server.ipv6.dynamic' config.yaml)
+    local ipv4_dynamic=$(yq e '.server.ipv4_dynamic' config.yaml)
+    local ipv6_dynamic=$(yq e '.server.ipv6_dynamic' config.yaml)
 
     # Automatically detect server's static IPv4 address from host_interface (for static case)
     server_ipv4_static=$(ip -4 addr show "$host_interface" | grep -oP 'inet \K[\d.]+' | head -n 1)
     if [[ -z "$server_ipv4_static" && "$ipv4_enabled" == "true" && "$ipv4_dynamic" != "true" ]]; then
-        echo "Error: Could not detect IPv4 address for $host_interface and dynamic is not set to true."
+        echo "Error: Could not detect IPv4 address for $host_interface and ipv4_dynamic is not set to true."
         return 1
     fi
 
     # Automatically detect server's static IPv6 address from host_interface (for static case)
     server_ipv6_static=$(ip -6 addr show "$host_interface" scope global | grep -oP 'inet6 \K[0-9a-f:]+' | head -n 1)
     if [[ -z "$server_ipv6_static" && "$ipv6_enabled" == "true" && "$ipv6_dynamic" != "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
-        echo "Error: Could not detect IPv6 address for $host_interface and dynamic is not set to true."
+        echo "Error: Could not detect IPv6 address for $host_interface and ipv6_dynamic is not set to true."
         return 1
     fi
 
