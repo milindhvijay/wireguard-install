@@ -1,0 +1,100 @@
+# WireGuard Configuration File
+# This YAML file defines the settings for your WireGuard VPN server and clients.
+# The script uses this file to generate server and client configurations, set up
+# firewall rules with nftables, and manage the VPN deployment. All fields are
+# optional unless explicitly marked as required, with sensible defaults provided.
+
+server:
+  # The name of the WireGuard interface on the server.
+  # Optional; defaults to "wg0" if not specified or set to null.
+  interface_name: wg0
+
+  # The host’s network interface used for NAT and routing (e.g., "eth0", "ens3").
+  host_interface: eth0
+
+  # The port on which the WireGuard server listens for incoming connections.
+  # Must be a valid port number (1-65535). Ensure it’s not blocked by your firewall
+  # or already in use by another service. The script uses this in the server config
+  # (ListenPort) and client configs (Endpoint: <public_endpoint>:<port>).
+  # Example: 51820 is the common default for WireGuard.
+  port: 51820
+
+  # The MTU for the WireGuard server interface.
+  # Optional; defaults to 1420 if not specified or set to null. This sets the MTU
+  # in the server’s [Interface] section.
+  mtu: 1420
+
+  # The public endpoint clients use to connect to the server.
+  # Optional; if not set or "null", the script auto-detects the public IP (IPv6
+  # preferred, then IPv4)
+  # Supports IPv6/IPv4 addresses or hostname
+  public_endpoint: null
+
+  # Whether the server’s external IPv4 address is dynamic
+  # If true, uses masquerade NAT. If false, uses static SNAT with the detected
+  # IP from host_interface. The script checks this for nftables configuration.
+  ipv4_dynamic: false
+
+  # Whether the server’s external IPv4 address is dynamic
+  # If true, uses masquerade NAT. If false, uses static SNAT with the detected
+  # IP from host_interface. The script checks this for nftables configuration.
+  ipv6_dynamic: false
+
+  # IPv4 configuration for the VPN server.
+  ipv4:
+    # Whether IPv4 is enabled for the VPN.
+    # Set to true to use IPv4; false to disable it. If true, the server and clients
+    # get IPv4 addresses, and firewall rules are set up for IPv4 NAT.
+    enabled: true
+
+    # The IPv4 address and subnet mask for the server in CIDR notation.
+    address: 10.0.1.1/24
+
+  # IPv6 configuration for the VPN server.
+  ipv6:
+    # Whether IPv6 is enabled for the VPN.
+    # Set to true to use IPv6; false to disable it. Requires IPv6. If true, server
+    #  and clients get IPv6 addresses, and firewall rules include IPv6 NAT.
+    enabled: false
+
+    address: fd00::1/64
+
+# List of client configurations.
+# Each client gets its own configuration file and keys. Add as many clients as needed.
+clients:
+  - name: client1
+
+    dns: 8.8.8.8
+
+    # The MTU for this client’s WireGuard interface.
+    # Optional; defaults to 1420 if not specified or set to null. Sets the MTU in the
+    # client’s [Interface] section.
+    mtu: 1420
+
+    allowed_ips: 0.0.0.0/0, ::/0
+
+    persistent_keepalive: 25
+
+    # Optional: IPv4 address assigned to the client.
+    # If not specified, the script auto-generates it (e.g., 10.0.1.2/24 for client1
+    # based on server.ipv4.address). You can set it manually here, but it must be
+    # in the same subnet as server.ipv4.address and unique per client. The script
+    # updates this field in the YAML during generation if not set.
+    #ipv4_address: "10.0.1.2/24"
+
+    # Optional: IPv6 address assigned to the client.
+    # If not specified and ipv6.enabled is true, the script auto-generates it
+    # (e.g., fd00::2/64 for client1 based on server.ipv6.address). Must be in the
+    # same subnet as server.ipv6.address and unique if set manually. Updated by
+    # the script if not provided.
+    #ipv6_address: "fd00::2/64"
+
+  - name: "client2"
+    # Another client example with minimal settings.
+    # The script fills in defaults or auto-generates missing fields.
+    dns: "1.1.1.1"
+    mtu: 1420
+    allowed_ips: "0.0.0.0/0, ::/0"
+    persistent_keepalive: 25
+    #ipv4_address: "10.0.1.3/24"  # Auto-generated if omitted
+    #ipv6_address: "fd00::3/64"   # Auto-generated if omitted and IPv6 enabled
