@@ -14,6 +14,9 @@ server:
   # Leave empty to auto-detect
   public_endpoint: 5.75.159.87
 
+  ipv4_dynamic: true
+  ipv6_dynamic: true
+
   # IP configuration
   ipv4:
     enabled: true
