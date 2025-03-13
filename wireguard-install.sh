@@ -510,7 +510,24 @@ else
                     exit 0
                 fi
 
-                # Check if server section changed
+                # Check if interface_name changed
+                old_interface_name=$(yq e '.server.interface_name' /etc/wireguard/config.yaml.backup)
+                [[ "$old_interface_name" == "null" || -z "$old_interface_name" ]] && old_interface_name="wg0"
+                if [[ "$interface_name" != "$old_interface_name" ]]; then
+                    echo "Interface name changed from '$old_interface_name' to '$interface_name'. Cleaning up old interface..."
+                    # Stop and disable the old WireGuard service
+                    systemctl disable --now wg-quick@"$old_interface_name" 2>/dev/null || echo "Old service $old_interface_name not running or not found."
+                    # Remove the old network interface
+                    ip link delete "$old_interface_name" 2>/dev/null || echo "Old interface $old_interface_name not found or already removed."
+                    # Remove the old config file
+                    if [[ -f "/etc/wireguard/${old_interface_name}.conf" ]]; then
+                        rm -f "/etc/wireguard/${old_interface_name}.conf"
+                        echo "Removed old configuration file: /etc/wireguard/${old_interface_name}.conf"
+                    fi
+                    # Note: We don’t remove keys or client configs here; they’ll be regenerated with the new interface name
+                fi
+
+                # Check if server section changed (including interface_name change)
                 yq e '.server' config.yaml > /tmp/server_new.yaml
                 yq e '.server' /etc/wireguard/config.yaml.backup > /tmp/server_old.yaml
                 if ! cmp -s /tmp/server_new.yaml /tmp/server_old.yaml; then
@@ -629,7 +646,7 @@ else
             fi
 
             # Restart WireGuard to apply changes
-            echo "Restarting WireGuard service..."
+            echo "Restarting WireGuard service with new interface '$interface_name'..."
             if systemctl restart wg-quick@"$interface_name"; then
                 if ! wg show "$interface_name" >/dev/null 2>&1; then
                     echo "Warning: $interface_name failed to restart properly, attempting manual restart..."
