@@ -35,12 +35,10 @@ clients:
 
   - name: laptop
     dns: 8.8.8.8, 8.8.4.4
-    mtu: 1420
     allowed_ips: 0.0.0.0/0, ::/0
     persistent_keepalive: 25
 
   - name: tablet
     dns: 9.9.9.9, 149.112.112.112
-    mtu: 1420
     allowed_ips: 0.0.0.0/0, ::/0
     persistent_keepalive: 25
