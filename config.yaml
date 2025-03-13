@@ -47,6 +47,6 @@ clients:
 
   - name: tablet
     dns: 9.9.9.9, 149.112.112.112
-    mtu: 1420
+    mtu: 1200
     allowed_ips: 0.0.0.0/0, ::/0
     persistent_keepalive: 25
