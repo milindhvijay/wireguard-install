@@ -47,9 +47,15 @@ generate_full_configs() {
     base_ipv6=$(echo "$server_ipv6_ip" | sed 's/:[0-9a-f]*$//')
     server_ipv6_last_segment=$(echo "$server_ipv6_ip" | grep -o '[0-9a-f]*$')
 
-    # Generate server keys
-    server_private_key=$(wg genkey)
-    server_public_key=$(echo "$server_private_key" | wg pubkey)
+    # Ensure keys directory exists
+    mkdir -p "$(dirname "$0")/keys"
+
+    # Generate and save server keys
+    wg genkey > "$(dirname "$0")/keys/server-${interface_name}-private.key"
+    server_private_key=$(cat "$(dirname "$0")/keys/server-${interface_name}-private.key")
+    echo "$server_private_key" | wg pubkey > "$(dirname "$0")/keys/server-${interface_name}-public.key"
+    server_public_key=$(cat "$(dirname "$0")/keys/server-${interface_name}-public.key")
+    chmod 600 "$(dirname "$0")/keys/server-${interface_name}-private.key" "$(dirname "$0")/keys/server-${interface_name}-public.key"
 
     # Create server configuration file with dynamic interface name
     cat << EOF > /etc/wireguard/"${interface_name}.conf"
@@ -96,10 +102,16 @@ EOF
             yq e -i ".clients[$i].ipv6_address = \"$client_ipv6\"" config.yaml.tmp
         fi
 
-        # Generate client keys
-        client_private_key=$(wg genkey)
-        client_public_key=$(echo "$client_private_key" | wg pubkey)
-        psk=$(wg genpsk)
+        # Generate and save client keys
+        wg genkey > "$(dirname "$0")/keys/${client_name}-${interface_name}-private.key"
+        client_private_key=$(cat "$(dirname "$0")/keys/${client_name}-${interface_name}-private.key")
+        echo "$client_private_key" | wg pubkey > "$(dirname "$0")/keys/${client_name}-${interface_name}-public.key"
+        client_public_key=$(cat "$(dirname "$0")/keys/${client_name}-${interface_name}-public.key")
+        wg genpsk > "$(dirname "$0")/keys/${client_name}-${interface_name}-psk.key"
+        psk=$(cat "$(dirname "$0")/keys/${client_name}-${interface_name}-psk.key")
+        chmod 600 "$(dirname "$0")/keys/${client_name}-${interface_name}-private.key" \
+                  "$(dirname "$0")/keys/${client_name}-${interface_name}-public.key" \
+                  "$(dirname "$0")/keys/${client_name}-${interface_name}-psk.key"
 
         # Append client to server config
         cat << EOF >> /etc/wireguard/"${interface_name}.conf"
@@ -204,7 +216,8 @@ generate_client_configs() {
     # Temporary file for YAML updates
     cp config.yaml config.yaml.tmp
 
-    # Ensure wireguard-configs directory exists
+    # Ensure directories exist
+    mkdir -p "$(dirname "$0")/keys"
     mkdir -p "$(dirname "$0")/wireguard-configs"
 
     for i in "${changed_clients[@]}"; do
@@ -230,17 +243,26 @@ generate_client_configs() {
             yq e -i ".clients[$i].ipv6_address = \"$client_ipv6\"" config.yaml.tmp
         fi
 
-        # Generate client keys
-        client_private_key=$(wg genkey)
-        client_public_key=$(echo "$client_private_key" | wg pubkey)
-        psk=$(wg genpsk)
+        # Generate and save client keys
+        wg genkey > "$(dirname "$0")/keys/${client_name}-${interface_name}-private.key"
+        client_private_key=$(cat "$(dirname "$0")/keys/${client_name}-${interface_name}-private.key")
+        echo "$client_private_key" | wg pubkey > "$(dirname "$0")/keys/${client_name}-${interface_name}-public.key"
+        client_public_key=$(cat "$(dirname "$0")/keys/${client_name}-${interface_name}-public.key")
+        wg genpsk > "$(dirname "$0")/keys/${client_name}-${interface_name}-psk.key"
+        psk=$(cat "$(dirname "$0")/keys/${client_name}-${interface_name}-psk.key")
+        chmod 600 "$(dirname "$0")/keys/${client_name}-${interface_name}-private.key" \
+                  "$(dirname "$0")/keys/${client_name}-${interface_name}-public.key" \
+                  "$(dirname "$0")/keys/${client_name}-${interface_name}-psk.key"
 
         # Remove old peer section from server config based on name (if it exists)
         old_name=$(yq e ".clients[$i].name" /etc/wireguard/config.yaml.backup)
         if [[ "$old_name" != "$client_name" && -n "$old_name" ]]; then
             sed -i "/# BEGIN_PEER $old_name/,/# END_PEER $old_name/d" /etc/wireguard/"${interface_name}.conf"
             rm -f "$(dirname "$0")/wireguard-configs/${old_name}-${interface_name}.conf"
-            echo "Removed old client configuration for '$old_name'."
+            rm -f "$(dirname "$0")/keys/${old_name}-${interface_name}-private.key" \
+                  "$(dirname "$0")/keys/${old_name}-${interface_name}-public.key" \
+                  "$(dirname "$0")/keys/${old_name}-${interface_name}-psk.key"
+            echo "Removed old client configuration and keys for '$old_name'."
         else
             sed -i "/# BEGIN_PEER $client_name/,/# END_PEER $client_name/d" /etc/wireguard/"${interface_name}.conf"
         fi
@@ -411,10 +433,15 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
 
     echo "WireGuard setup complete. Here are the client configurations:"
     if ls "$(dirname "$0")/wireguard-configs"/*-"${interface_name}.conf" >/dev/null 2>&1; then
+        mkdir -p "$(dirname "$0")/wireguard-configs/qr"
         for client_conf in "$(dirname "$0")/wireguard-configs"/*-"${interface_name}.conf"; do
-            echo -e "\nClient: $(basename "$client_conf")"
+            client_name=$(basename "$client_conf" .conf)
+            qr_file="$(dirname "$0")/wireguard-configs/qr/${client_name}.png"
+            echo -e "\nClient: $client_name"
             qrencode -t ANSI256UTF8 < "$client_conf"
+            qrencode -o "$qr_file" < "$client_conf"
             echo "Configuration file saved at: $client_conf"
+            echo "QR code image saved at: $qr_file"
         done
     else
         echo "No client configuration files found in $(dirname "$0")/wireguard-configs/."
@@ -482,10 +509,15 @@ else
                     # Display all client QR codes
                     echo "Updated client configurations:"
                     if ls "$(dirname "$0")/wireguard-configs"/*-"${interface_name}.conf" >/dev/null 2>&1; then
+                        mkdir -p "$(dirname "$0")/wireguard-configs/qr"
                         for client_conf in "$(dirname "$0")/wireguard-configs"/*-"${interface_name}.conf"; do
-                            echo -e "\nClient: $(basename "$client_conf")"
+                            client_name=$(basename "$client_conf" .conf)
+                            qr_file="$(dirname "$0")/wireguard-configs/qr/${client_name}.png"
+                            echo -e "\nClient: $client_name"
                             qrencode -t ANSI256UTF8 < "$client_conf"
+                            qrencode -o "$qr_file" < "$client_conf"
                             echo "Configuration file saved at: $client_conf"
+                            echo "QR code image saved at: $qr_file"
                         done
                     else
                         echo "No client configuration files found in $(dirname "$0")/wireguard-configs/."
@@ -523,13 +555,17 @@ else
 
                         # Display QR codes only for changed clients
                         echo "Updated client configurations:"
+                        mkdir -p "$(dirname "$0")/wireguard-configs/qr"
                         for i in "${changed_clients[@]}"; do
                             client_name=$(yq e ".clients[$i].name" config.yaml)
                             client_conf="$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
+                            qr_file="$(dirname "$0")/wireguard-configs/qr/${client_name}-${interface_name}.png"
                             if [[ -f "$client_conf" ]]; then
-                                echo -e "\nClient: $(basename "$client_conf")"
+                                echo -e "\nClient: ${client_name}-${interface_name}"
                                 qrencode -t ANSI256UTF8 < "$client_conf"
+                                qrencode -o "$qr_file" < "$client_conf"
                                 echo "Configuration file saved at: $client_conf"
+                                echo "QR code image saved at: $qr_file"
                             else
                                 echo "Warning: Configuration file for $client_name not found at $client_conf."
                             fi
@@ -558,10 +594,15 @@ else
                 # Display all client QR codes
                 echo "Updated client configurations:"
                 if ls "$(dirname "$0")/wireguard-configs"/*-"${interface_name}.conf" >/dev/null 2>&1; then
+                    mkdir -p "$(dirname "$0")/wireguard-configs/qr"
                     for client_conf in "$(dirname "$0")/wireguard-configs"/*-"${interface_name}.conf"; do
-                        echo -e "\nClient: $(basename "$client_conf")"
+                        client_name=$(basename "$client_conf" .conf)
+                        qr_file="$(dirname "$0")/wireguard-configs/qr/${client_name}.png"
+                        echo -e "\nClient: $client_name"
                         qrencode -t ANSI256UTF8 < "$client_conf"
+                        qrencode -o "$qr_file" < "$client_conf"
                         echo "Configuration file saved at: $client_conf"
+                        echo "QR code image saved at: $qr_file"
                     done
                 else
                     echo "No client configuration files found in $(dirname "$0")/wireguard-configs/."
@@ -621,10 +662,14 @@ else
                 fi
             fi
 
-            # Remove the wireguard-configs directory
+            # Remove the wireguard-configs and keys directories
             if [[ -d "$(dirname "$0")/wireguard-configs" ]]; then
                 rm -rf "$(dirname "$0")/wireguard-configs"
-                echo "Removed client configuration directory: $(dirname "$0")/wireguard-configs"
+                echo "Removed client configuration directory (including QR codes): $(dirname "$0")/wireguard-configs"
+            fi
+            if [[ -d "$(dirname "$0")/keys" ]]; then
+                rm -rf "$(dirname "$0")/keys"
+                echo "Removed keys directory: $(dirname "$0")/keys"
             fi
 
             rm -rf /etc/wireguard
