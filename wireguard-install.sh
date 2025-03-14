@@ -242,24 +242,33 @@ generate_client_configs() {
                   "$client_key_dir/${client_name}-${interface_name}-public.key" \
                   "$client_key_dir/${client_name}-${interface_name}-psk.key"
 
+        # Remove the old [Peer] entry by matching its AllowedIPs
+        client_allowed_ips_ipv4="${base_ipv4}.${octet}/32"
+        client_allowed_ips_ipv6=$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo "${base_ipv6}:${client_ipv6_last_segment}/128" )
         old_name=$(yq e ".clients[$i].name" /etc/wireguard/config.yaml.backup)
         if [[ "$old_name" != "$client_name" && -n "$old_name" ]]; then
-            sed -i "/# BEGIN_PEER $old_name/,/# END_PEER $old_name/d" /etc/wireguard/"${interface_name}.conf"
+            # If the name changed, remove the old client’s config and keys
             rm -f "$(dirname "$0")/wireguard-configs/${old_name}-${interface_name}.conf"
             rm -rf "$(dirname "$0")/keys/${old_name}-${interface_name}"
             echo "Removed old client configuration and keys for '$old_name'."
-        else
-            sed -i "/# BEGIN_PEER $client_name/,/# END_PEER $client_name/d" /etc/wireguard/"${interface_name}.conf"
         fi
 
+        # Remove any existing [Peer] with the same AllowedIPs (old entry for this client)
+        sed -i "/\[Peer\]/,/^$/ {
+            /AllowedIPs = .*${client_allowed_ips_ipv4}.*/d
+            /^\[Peer\]$/p; /^$/p; d
+        }" /etc/wireguard/"${interface_name}.conf"
+
+        # Append the new [Peer] entry
         cat << EOF >> /etc/wireguard/"${interface_name}.conf"
 
 [Peer]
 PublicKey = $client_public_key
 PresharedKey = $psk
-AllowedIPs = ${base_ipv4}.${octet}/32$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", ${base_ipv6}:${client_ipv6_last_segment}/128" )
+AllowedIPs = $client_allowed_ips_ipv4$( [[ -n "$client_allowed_ips_ipv6" ]] && echo ", $client_allowed_ips_ipv6" )
 EOF
 
+        # Generate the client config file
         cat << EOF > "$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
 [Interface]
 Address = $client_ipv4$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", $client_ipv6" )
