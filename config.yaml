@@ -6,18 +6,20 @@ server:
   host_interface: eth0
   mtu: 1420
   public_endpoint: 5.75.189.129
-  ipv4_dynamic: true
-  ipv6_dynamic: true
+  ipv4_dynamic: false
+  ipv6_dynamic: false
   ipv4:
     enabled: true
     address: 10.0.1.2/24
     nat: true
+    snat_ip: 59.95.64.1
   ipv6:
     enabled: true
     address: 2a01:4f8:1c1b:743c::12/80
-    nat: false
+    nat: true
+    snat_ip: 2a01:4f4:1c1b:743c::1
 clients:
-  - name: phone1
+  - name: phone14
     dns: 8.8.4.4
     mtu: 1420
     allowed_ips: 0.0.0.0/0, ::/0
@@ -31,10 +33,27 @@ clients:
     persistent_keepalive: 25
     ipv4_address: 10.0.1.4/24
     ipv6_address: 2a01:4f8:1c1b:743c::14/80
-  - name: tablet
-    dns: 9.9.9.9, 149.112.112.112
-    mtu: 1200
+  - name: phone13
+    dns: 8.8.4.4
+    mtu: 1420
     allowed_ips: 0.0.0.0/0, ::/0
-    persistent_keepalive: 25
+    ipv4_address: 10.0.1.6/24
+    ipv6_address: 2a01:4f8:1c1b:743c::16/80
+  - name: phone1344
+    dns: 8.8.4.4
+    mtu: 1420
+    allowed_ips: 0.0.0.0/0, ::/0
     ipv4_address: 10.0.1.5/24
-    ipv6_address: 2a01:4f8:1c1b:743c::15/80
+    ipv6_address: 2a01:4f8:1c1b:743c::2/80
+  - name: phone13444
+    dns: 8.8.4.4
+    mtu: 1420
+    allowed_ips: 0.0.0.0/0, ::/0
+    ipv4_address: 10.0.1.7/24
+    ipv6_address: 2a01:4f8:1c1b:743c::3/80
+  - name: phone134443
+    dns: 8.8.4.4
+    mtu: 1420
+    allowed_ips: 0.0.0.0/0, ::/0
+    ipv4_address: 10.0.1.8/24
+    ipv6_address: 2a01:4f8:1c1b:743c::4/80
