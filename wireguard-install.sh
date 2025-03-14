@@ -19,37 +19,34 @@ else
     exit 1
 fi
 
-# Helper function to check if an IPv4 address is in use
 is_ipv4_in_use() {
     local ip="$1"
     local used_ips=("${@:2}")
     for used_ip in "${used_ips[@]}"; do
         if [[ "$used_ip" == "$ip" ]]; then
-            return 0  # True, IP is in use
+            return 0
         fi
     done
-    return 1  # False, IP is not in use
+    return 1
 }
 
-# Helper function to check if an IPv6 address is in use
 is_ipv6_in_use() {
     local ip="$1"
     local used_ips=("${@:2}")
     for used_ip in "${used_ips[@]}"; do
         if [[ "$used_ip" == "$ip" ]]; then
-            return 0  # True, IP is in use
+            return 0
         fi
     done
-    return 1  # False, IP is not in use
+    return 1
 }
 
-# Helper function to find the next available IPv4 address
 find_next_ipv4() {
     local base_ipv4="$1"
     local mask="$2"
     local used_ips=("${@:3}")
-    local octet=2  # Start after the server IP (e.g., 10.0.0.1 -> 10.0.0.2)
-    local max_octet=$((256 - 1))  # Assuming a /24 subnet for simplicity
+    local octet=2
+    local max_octet=$((256 - 1))
     while [[ $octet -le $max_octet ]]; do
         local candidate="${base_ipv4}.${octet}"
         if ! is_ipv4_in_use "$candidate" "${used_ips[@]}"; then
@@ -62,13 +59,12 @@ find_next_ipv4() {
     return 1
 }
 
-# Helper function to find the next available IPv6 address
 find_next_ipv6() {
     local base_ipv6="$1"
     local mask="$2"
     local used_ips=("${@:3}")
-    local segment=2  # Start after the server IP (e.g., fd00::1 -> fd00::2)
-    local max_segment=$((16#ffff))  # Assuming a /112 subnet for simplicity
+    local segment=2
+    local max_segment=$((16#ffff))
     while [[ $segment -le $max_segment ]]; do
         local candidate_segment=$(printf "%x" "$segment")
         local candidate="${base_ipv6}:${candidate_segment}"
@@ -82,7 +78,6 @@ find_next_ipv6() {
     return 1
 }
 
-# Helper function to check for duplicate client names
 check_duplicate_client_names() {
     local number_of_clients=$(yq e '.remote_peer | length' config.yaml)
     local -A names_seen
@@ -121,7 +116,6 @@ cleanup_conflicting_interfaces() {
 }
 
 generate_full_configs() {
-    # Check for duplicate client names before proceeding
     if ! check_duplicate_client_names; then
         return 1
     fi
@@ -187,7 +181,6 @@ EOF
         fi
     fi
 
-    # Collect all assigned IPs from config.yaml
     local -a used_ipv4s=("$server_ipv4_ip")
     local -a used_ipv6s=("$server_ipv6_ip")
     for i in $(seq 0 $(($number_of_clients - 1))); do
@@ -277,7 +270,6 @@ EOF
 generate_client_configs() {
     local changed_clients=("$@")
 
-    # Check for duplicate client names before proceeding
     if ! check_duplicate_client_names; then
         return 1
     fi
@@ -324,7 +316,6 @@ generate_client_configs() {
     original_umask=$(umask)
     umask 077
 
-    # Collect all assigned IPs from config.yaml and existing config
     local -a used_ipv4s=("$server_ipv4_ip")
     local -a used_ipv6s=("$server_ipv6_ip")
     local number_of_clients=$(yq e '.remote_peer | length' config.yaml)
@@ -384,14 +375,12 @@ generate_client_configs() {
         client_ipv6_ip=$(echo "$client_ipv6" | cut -d '/' -f 1)
         client_allowed_ips_combined="${client_ipv4_ip}/32$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", ${client_ipv6_ip}/128" )"
 
-        # Handle name change cleanup
         old_name=$(yq e ".remote_peer[$i].name" /etc/wireguard/config.yaml.backup)
         if [[ "$old_name" != "$client_name" && -n "$old_name" ]]; then
             rm -f "$(dirname "$0")/wireguard-configs/${old_name}-${interface_name}.conf"
             rm -rf "$(dirname "$0")/keys/${old_name}-${interface_name}"
         fi
 
-        # Remove the old [Peer] entry and preserve all others with consistent spacing
         temp_file=$(mktemp)
         awk -v ip="$client_ipv4_ip" '
         BEGIN { in_section = 0; buffer = ""; need_blank = 0 }
@@ -421,7 +410,6 @@ generate_client_configs() {
         mv "$temp_file" /etc/wireguard/"${interface_name}.conf"
         chmod 600 /etc/wireguard/"${interface_name}.conf"
 
-        # Append the new [Peer] entry with exactly one blank line before it
         if [[ -s /etc/wireguard/"${interface_name}.conf" ]]; then
             sed -i -e :a -e '/^\n*$/{$d;N;};/\n$/ba' /etc/wireguard/"${interface_name}.conf"
             echo "" >> /etc/wireguard/"${interface_name}.conf"
@@ -466,11 +454,9 @@ configure_firewall() {
     local ipv4_enabled=$(yq e '.local_peer.ipv4.enabled' config.yaml)
     local ipv6_enabled=$(yq e '.local_peer.ipv6.enabled' config.yaml)
 
-    # New parameters for manual SNAT IP specification with updated names
     local ipv4_snat_ip=$(yq e '.local_peer.ipv4.nat44_public_IP' config.yaml)
     local ipv6_snat_ip=$(yq e '.local_peer.ipv6.nat66_public_IP' config.yaml)
 
-    # Validate required variables
     if [[ -z "$host_interface" || "$host_interface" == "null" ]]; then
         echo "Error: host_interface is not set in config.yaml."
         return 1
@@ -484,11 +470,9 @@ configure_firewall() {
         return 1
     fi
 
-    # Get server's static IPs
     server_ipv4_static=$(ip -4 addr show "$host_interface" | grep -oP 'inet \K[\d.]+' | head -n 1)
     server_ipv6_static=$(ip -6 addr show "$host_interface" scope global | grep -oP 'inet6 \K[0-9a-f:]+' | head -n 1)
 
-    # Use manual SNAT IPs if provided, otherwise use server's static IPs
     if [[ "$ipv4_snat_ip" == "null" || -z "$ipv4_snat_ip" ]]; then
         ipv4_snat_ip="$server_ipv4_static"
     fi
@@ -497,7 +481,6 @@ configure_firewall() {
         ipv6_snat_ip="$server_ipv6_static"
     fi
 
-    # Validate SNAT IPs when NAT is enabled but not dynamic
     if [[ "$ipv4_nat" == "true" && "$ipv4_dynamic" != "true" && -z "$ipv4_snat_ip" ]]; then
         echo "Error: No IPv4 SNAT IP available. Either specify local_peer.ipv4.nat44_public_IP, ensure host_interface has an IPv4, or set ipv4.dynamic to true."
         return 1
@@ -508,7 +491,6 @@ configure_firewall() {
         return 1
     fi
 
-    # Build NAT rules as an array
     local -a nat_rules=()
     if [[ "$ipv4_nat" == "true" && "$ipv4_enabled" == "true" ]]; then
         if [[ "$ipv4_dynamic" == "true" ]]; then
@@ -526,13 +508,11 @@ configure_firewall() {
         fi
     fi
 
-    # If there are no rules to add, we're done
     if [[ ${#nat_rules[@]} -eq 0 ]]; then
         echo "No firewall rules needed for WireGuard."
         return 0
     fi
 
-    # Create the WireGuard table content
     local wireguard_table=$(cat << EOF
 table inet wireguard {
     chain postrouting {
@@ -543,14 +523,10 @@ $(for rule in "${nat_rules[@]}"; do echo "        $rule;"; done)
 EOF
 )
 
-    # Check if nftables.conf exists and has content
     if [[ -f /etc/nftables.conf && -s /etc/nftables.conf ]]; then
-        # Backup the current file
         cp /etc/nftables.conf /etc/nftables.conf.backup-$(date +%F-%T)
 
-        # Check if the wireguard table already exists
         if grep -q "table inet wireguard" /etc/nftables.conf; then
-            # Replace the existing wireguard table
             temp_file=$(mktemp)
             awk -v new_table="$wireguard_table" '
             BEGIN { skip = 0; brace_count = 0; printed = 0; }
@@ -577,8 +553,6 @@ EOF
 
             mv "$temp_file" /etc/nftables.conf
         else
-            # Append the wireguard table to the existing file
-            # First ensure the file has a proper shebang if needed
             if ! grep -q "^#!/usr/sbin/nft -f" /etc/nftables.conf; then
                 temp_file=$(mktemp)
                 echo '#!/usr/sbin/nft -f' > "$temp_file"
@@ -586,12 +560,10 @@ EOF
                 mv "$temp_file" /etc/nftables.conf
             fi
 
-            # Now append the wireguard table
             echo "" >> /etc/nftables.conf
             echo "$wireguard_table" >> /etc/nftables.conf
         fi
     else
-        # Create a new nftables.conf file
         echo '#!/usr/sbin/nft -f' > /etc/nftables.conf
         echo "" >> /etc/nftables.conf
         echo "$wireguard_table" >> /etc/nftables.conf
@@ -599,7 +571,6 @@ EOF
 
     chmod 600 /etc/nftables.conf
 
-    # Apply the updated ruleset
     if ! nft -f /etc/nftables.conf; then
         echo "Error: Failed to apply nftables configuration. Restoring backup."
         if [[ -f /etc/nftables.conf.backup-$(date +%F-%T) ]]; then
@@ -617,7 +588,6 @@ EOF
 }
 
 clear_firewall_rules() {
-    # Delete the WireGuard table from the running ruleset, if it exists
     nft delete table inet wireguard 2>/dev/null || echo "No WireGuard table found in running config, skipping."
 }
 
@@ -654,7 +624,6 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
         exit 1
     fi
 
-    # Check for duplicate client names before proceeding with fresh install
     if ! check_duplicate_client_names; then
         exit 1
     fi
@@ -746,7 +715,6 @@ else
                 exit 1
             fi
 
-            # Check for duplicate client names before proceeding with regeneration
             if ! check_duplicate_client_names; then
                 exit 1
             fi
@@ -923,12 +891,9 @@ else
                 echo "Cleaning up WireGuard-specific nftables rules..."
                 cp /etc/nftables.conf /etc/nftables.conf.backup-$(date +%F-%T)
 
-                # Create a temporary file
                 temp_file=$(mktemp)
 
-                # Extract the wireguard table to identify it
                 if grep -q "table inet wireguard" /etc/nftables.conf; then
-                    # Process the file line by line, skipping the wireguard table section
                     awk '
                     BEGIN { skip = 0; brace_count = 0; }
                     /table inet wireguard {/ { skip = 1; brace_count = 1; next; }
@@ -943,7 +908,6 @@ else
                     skip == 0 { print $0; }
                     ' /etc/nftables.conf > "$temp_file"
 
-                    # Clean up empty lines (more than one consecutive newline)
                     awk 'NF {p=1} p' "$temp_file" > /etc/nftables.conf
 
                     if [[ ! -s /etc/nftables.conf || $(grep -v '^#!/usr/sbin/nft -f' /etc/nftables.conf | grep -v '^\s*$' | wc -l) -eq 0 ]]; then
@@ -964,7 +928,6 @@ else
                     echo "No WireGuard table found in nftables configuration."
                 fi
 
-                # Clean up temp file
                 rm -f "$temp_file"
             fi
 
