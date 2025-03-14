@@ -328,6 +328,22 @@ configure_firewall() {
     local ipv6_nat=$(yq e '.server.ipv6.nat' config.yaml)
     local ipv4_dynamic=$(yq e '.server.ipv4.dynamic' config.yaml)
     local ipv6_dynamic=$(yq e '.server.ipv6.dynamic' config.yaml)
+    local ipv4_enabled=$(yq e '.server.ipv4.enabled' config.yaml)
+    local ipv6_enabled=$(yq e '.server.ipv6.enabled' config.yaml)
+
+    # Validate required variables
+    if [[ -z "$host_interface" || "$host_interface" == "null" ]]; then
+        echo "Error: host_interface is not set in config.yaml."
+        return 1
+    fi
+    if [[ "$ipv4_enabled" == "true" && -z "$vpn_ipv4_subnet" ]]; then
+        echo "Error: vpn_ipv4_subnet is not set but IPv4 is enabled."
+        return 1
+    fi
+    if [[ "$ipv6_enabled" == "true" && -z "$vpn_ipv6_subnet" ]]; then
+        echo "Error: vpn_ipv6_subnet is not set but IPv6 is enabled."
+        return 1
+    fi
 
     server_ipv4_static=$(ip -4 addr show "$host_interface" | grep -oP 'inet \K[\d.]+' | head -n 1)
     if [[ -z "$server_ipv4_static" && "$ipv4_nat" == "true" && "$ipv4_dynamic" != "true" ]]; then
@@ -342,41 +358,52 @@ configure_firewall() {
 
     # Check if /etc/nftables.conf exists and contains other rules
     if [[ -f /etc/nftables.conf ]]; then
-        # Backup the current file
         cp /etc/nftables.conf /etc/nftables.conf.backup-$(date +%F-%T)
-        # Remove existing WireGuard table from the file, if it exists
         sed -i '/table inet wireguard {/,/}/d' /etc/nftables.conf
     else
-        # If the file doesn’t exist, create a minimal one with a shebang
         echo "#!/usr/sbin/nft -f" > /etc/nftables.conf
     fi
 
-    # Add or update the WireGuard table
-    if [[ "$ipv4_nat" == "true" || "$ipv6_nat" == "true" ]]; then
+    # Build NAT rules dynamically
+    local nat_rules=""
+    if [[ "$ipv4_nat" == "true" && "$ipv4_enabled" == "true" ]]; then
+        if [[ "$ipv4_dynamic" == "true" ]]; then
+            nat_rules+="ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" masquerade persistent\n"
+        elif [[ -n "$server_ipv4_static" ]]; then
+            nat_rules+="ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" snat to $server_ipv4_static persistent\n"
+        fi
+    fi
+    if [[ "$ipv6_nat" == "true" && "$ipv6_enabled" == "true" ]]; then
+        if [[ "$ipv6_dynamic" == "true" ]]; then
+            nat_rules+="ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" masquerade persistent\n"
+        elif [[ -n "$server_ipv6_static" ]]; then
+            nat_rules+="ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" snat to $server_ipv6_static persistent\n"
+        fi
+    fi
+
+    # Only append the table if there are NAT rules to add
+    if [[ -n "$nat_rules" ]]; then
         cat << EOF >> /etc/nftables.conf
 
 table inet wireguard {
     chain postrouting {
         type nat hook postrouting priority 100; policy accept;
-        $( [[ "$ipv4_nat" == "true" && "$ipv4_enabled" == "true" && "$ipv4_dynamic" == "true" ]] && echo "ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" masquerade persistent" )
-        $( [[ "$ipv4_nat" == "true" && "$ipv4_enabled" == "true" && "$ipv4_dynamic" != "true" && -n "$server_ipv4_static" ]] && echo "ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" snat to $server_ipv4_static persistent" )
-        $( [[ "$ipv6_nat" == "true" && "$ipv6_enabled" == "true" && "$ipv6_dynamic" == "true" ]] && echo "ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" masquerade persistent" )
-        $( [[ "$ipv6_nat" == "true" && "$ipv6_enabled" == "true" && "$ipv6_dynamic" != "true" && -n "$server_ipv6_static" ]] && echo "ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" snat to $server_ipv6_static persistent" )
+        $nat_rules
     }
 }
 EOF
     else
-        echo "Both ipv4.nat and ipv6.nat are false; ensuring WireGuard NAT table is removed."
-        # If NAT is disabled, we don’t append the table, and the prior sed command ensures it’s gone
+        echo "No NAT rules required (ipv4.nat and ipv6.nat are false or conditions not met). Skipping firewall configuration."
+        return 0
     fi
 
     # Apply the updated ruleset
-    nft -f /etc/nftables.conf || {
+    if ! nft -f /etc/nftables.conf; then
         echo "Error: Failed to apply nftables configuration. Restoring backup."
         mv /etc/nftables.conf.backup-$(date +%F-%T) /etc/nftables.conf
         nft -f /etc/nftables.conf
         return 1
-    }
+    fi
     systemctl enable nftables
     systemctl restart nftables
 }
