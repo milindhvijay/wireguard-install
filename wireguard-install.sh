@@ -84,10 +84,10 @@ find_next_ipv6() {
 
 # Helper function to check for duplicate client names
 check_duplicate_client_names() {
-    local number_of_clients=$(yq e '.clients | length' config.yaml)
+    local number_of_clients=$(yq e '.remote_peer | length' config.yaml)
     local -A names_seen
     for i in $(seq 0 $(($number_of_clients - 1))); do
-        local client_name=$(yq e ".clients[$i].name" config.yaml)
+        local client_name=$(yq e ".remote_peer[$i].name" config.yaml)
         if [[ -z "$client_name" || "$client_name" == "null" ]]; then
             echo "Error: Client at index $i has no name specified in config.yaml."
             return 1
@@ -126,19 +126,19 @@ generate_full_configs() {
         return 1
     fi
 
-    port=$(yq e '.server.port' config.yaml)
-    mtu=$(yq e '.server.mtu' config.yaml)
+    port=$(yq e '.local_peer.port' config.yaml)
+    mtu=$(yq e '.local_peer.mtu' config.yaml)
     [[ "$mtu" == "null" || -z "$mtu" ]] && mtu=1420
-    public_endpoint=$(yq e '.server.public_endpoint' config.yaml)
-    interface_name=$(yq e '.server.interface_name' config.yaml)
+    public_endpoint=$(yq e '.local_peer.public_endpoint' config.yaml)
+    interface_name=$(yq e '.local_peer.interface_name' config.yaml)
     [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
-    ipv4_enabled=$(yq e '.server.ipv4.enabled' config.yaml)
-    server_ipv4=$(yq e '.server.ipv4.address' config.yaml)
+    ipv4_enabled=$(yq e '.local_peer.ipv4.enabled' config.yaml)
+    server_ipv4=$(yq e '.local_peer.ipv4.gateway' config.yaml)
     server_ipv4_ip=$(echo "$server_ipv4" | cut -d '/' -f 1)
     server_ipv4_mask=$(echo "$server_ipv4" | cut -d '/' -f 2)
     base_ipv4=$(echo "$server_ipv4_ip" | cut -d '.' -f 1-3)
-    ipv6_enabled=$(yq e '.server.ipv6.enabled' config.yaml)
-    server_ipv6=$(yq e '.server.ipv6.address' config.yaml)
+    ipv6_enabled=$(yq e '.local_peer.ipv6.enabled' config.yaml)
+    server_ipv6=$(yq e '.local_peer.ipv6.gateway' config.yaml)
     server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
     server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
     vpn_ipv6_subnet="${server_ipv6_ip}/${server_ipv6_mask}"
@@ -164,7 +164,7 @@ ListenPort = $port
 MTU = $mtu
 EOF
 
-    number_of_clients=$(yq e '.clients | length' config.yaml)
+    number_of_clients=$(yq e '.remote_peer | length' config.yaml)
     cp config.yaml config.yaml.tmp
     mkdir -p "$(dirname "$0")/wireguard-configs"
 
@@ -191,21 +191,21 @@ EOF
     local -a used_ipv4s=("$server_ipv4_ip")
     local -a used_ipv6s=("$server_ipv6_ip")
     for i in $(seq 0 $(($number_of_clients - 1))); do
-        local ipv4=$(yq e ".clients[$i].ipv4_address" config.yaml)
-        local ipv6=$(yq e ".clients[$i].ipv6_address" config.yaml)
+        local ipv4=$(yq e ".remote_peer[$i].ipv4_address" config.yaml)
+        local ipv6=$(yq e ".remote_peer[$i].ipv6_address" config.yaml)
         [[ "$ipv4" != "null" && -n "$ipv4" ]] && used_ipv4s+=("$(echo "$ipv4" | cut -d '/' -f 1)")
         [[ "$ipv6" != "null" && -n "$ipv6" ]] && used_ipv6s+=("$(echo "$ipv6" | cut -d '/' -f 1)")
     done
 
     for i in $(seq 0 $(($number_of_clients - 1))); do
-        client_name=$(yq e ".clients[$i].name" config.yaml)
-        client_dns=$(yq e ".clients[$i].dns" config.yaml)
-        client_mtu=$(yq e ".clients[$i].mtu" config.yaml)
+        client_name=$(yq e ".remote_peer[$i].name" config.yaml)
+        client_dns=$(yq e ".remote_peer[$i].dns" config.yaml)
+        client_mtu=$(yq e ".remote_peer[$i].mtu" config.yaml)
         [[ "$client_mtu" == "null" || -z "$client_mtu" ]] && client_mtu=1420
-        client_allowed_ips=$(yq e ".clients[$i].allowed_ips" config.yaml)
-        client_persistent_keepalive=$(yq e ".clients[$i].persistent_keepalive" config.yaml)
+        client_allowed_ips=$(yq e ".remote_peer[$i].allowed_ips" config.yaml)
+        client_persistent_keepalive=$(yq e ".remote_peer[$i].persistent_keepalive" config.yaml)
 
-        client_ipv4=$(yq e ".clients[$i].ipv4_address" config.yaml)
+        client_ipv4=$(yq e ".remote_peer[$i].ipv4_address" config.yaml)
         if [[ "$ipv4_enabled" == "true" && ( "$client_ipv4" == "null" || -z "$client_ipv4" ) ]]; then
             client_ipv4=$(find_next_ipv4 "$base_ipv4" "$server_ipv4_mask" "${used_ipv4s[@]}")
             if [[ $? -ne 0 ]]; then
@@ -215,7 +215,7 @@ EOF
             used_ipv4s+=("$(echo "$client_ipv4" | cut -d '/' -f 1)")
         fi
 
-        client_ipv6=$(yq e ".clients[$i].ipv6_address" config.yaml)
+        client_ipv6=$(yq e ".remote_peer[$i].ipv6_address" config.yaml)
         if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 && ( "$client_ipv6" == "null" || -z "$client_ipv6" ) ]]; then
             client_ipv6=$(find_next_ipv6 "$base_ipv6" "$server_ipv6_mask" "${used_ipv6s[@]}")
             if [[ $? -ne 0 ]]; then
@@ -225,9 +225,9 @@ EOF
             used_ipv6s+=("$(echo "$client_ipv6" | cut -d '/' -f 1)")
         fi
 
-        yq e -i ".clients[$i].ipv4_address = \"$client_ipv4\"" config.yaml.tmp
+        yq e -i ".remote_peer[$i].ipv4_address = \"$client_ipv4\"" config.yaml.tmp
         if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
-            yq e -i ".clients[$i].ipv6_address = \"$client_ipv6\"" config.yaml.tmp
+            yq e -i ".remote_peer[$i].ipv6_address = \"$client_ipv6\"" config.yaml.tmp
         fi
 
         client_key_dir="$(dirname "$0")/keys/${client_name}-${interface_name}"
@@ -282,23 +282,23 @@ generate_client_configs() {
         return 1
     fi
 
-    port=$(yq e '.server.port' config.yaml)
-    interface_name=$(yq e '.server.interface_name' config.yaml)
+    port=$(yq e '.local_peer.port' config.yaml)
+    interface_name=$(yq e '.local_peer.interface_name' config.yaml)
     [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
-    ipv4_enabled=$(yq e '.server.ipv4.enabled' config.yaml)
-    server_ipv4=$(yq e '.server.ipv4.address' config.yaml)
+    ipv4_enabled=$(yq e '.local_peer.ipv4.enabled' config.yaml)
+    server_ipv4=$(yq e '.local_peer.ipv4.gateway' config.yaml)
     server_ipv4_ip=$(echo "$server_ipv4" | cut -d '/' -f 1)
     server_ipv4_mask=$(echo "$server_ipv4" | cut -d '/' -f 2)
     base_ipv4=$(echo "$server_ipv4_ip" | cut -d '.' -f 1-3)
-    ipv6_enabled=$(yq e '.server.ipv6.enabled' config.yaml)
-    server_ipv6=$(yq e '.server.ipv6.address' config.yaml)
+    ipv6_enabled=$(yq e '.local_peer.ipv6.enabled' config.yaml)
+    server_ipv6=$(yq e '.local_peer.ipv6.gateway' config.yaml)
     server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
     server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
     vpn_ipv6_subnet="${server_ipv6_ip}/${server_ipv6_mask}"
     base_ipv6=$(echo "$server_ipv6_ip" | sed 's/:[0-9a-f]*$//')
     server_public_key=$(wg show "$interface_name" public-key)
 
-    public_endpoint=$(yq e '.server.public_endpoint' config.yaml)
+    public_endpoint=$(yq e '.local_peer.public_endpoint' config.yaml)
     if [[ -n "$public_endpoint" && "$public_endpoint" != "null" ]]; then
         if [[ "$public_endpoint" =~ : && ! "$public_endpoint" =~ \. ]]; then
             endpoint="[$public_endpoint]"
@@ -327,23 +327,23 @@ generate_client_configs() {
     # Collect all assigned IPs from config.yaml and existing config
     local -a used_ipv4s=("$server_ipv4_ip")
     local -a used_ipv6s=("$server_ipv6_ip")
-    local number_of_clients=$(yq e '.clients | length' config.yaml)
+    local number_of_clients=$(yq e '.remote_peer | length' config.yaml)
     for i in $(seq 0 $(($number_of_clients - 1))); do
-        local ipv4=$(yq e ".clients[$i].ipv4_address" config.yaml)
-        local ipv6=$(yq e ".clients[$i].ipv6_address" config.yaml)
+        local ipv4=$(yq e ".remote_peer[$i].ipv4_address" config.yaml)
+        local ipv6=$(yq e ".remote_peer[$i].ipv6_address" config.yaml)
         [[ "$ipv4" != "null" && -n "$ipv4" ]] && used_ipv4s+=("$(echo "$ipv4" | cut -d '/' -f 1)")
         [[ "$ipv6" != "null" && -n "$ipv6" ]] && used_ipv6s+=("$(echo "$ipv6" | cut -d '/' -f 1)")
     done
 
     for i in "${changed_clients[@]}"; do
-        client_name=$(yq e ".clients[$i].name" config.yaml)
-        client_dns=$(yq e ".clients[$i].dns" config.yaml)
-        client_mtu=$(yq e ".clients[$i].mtu" config.yaml)
+        client_name=$(yq e ".remote_peer[$i].name" config.yaml)
+        client_dns=$(yq e ".remote_peer[$i].dns" config.yaml)
+        client_mtu=$(yq e ".remote_peer[$i].mtu" config.yaml)
         [[ "$client_mtu" == "null" || -z "$client_mtu" ]] && client_mtu=1420
-        client_allowed_ips=$(yq e ".clients[$i].allowed_ips" config.yaml)
-        client_persistent_keepalive=$(yq e ".clients[$i].persistent_keepalive" config.yaml)
+        client_allowed_ips=$(yq e ".remote_peer[$i].allowed_ips" config.yaml)
+        client_persistent_keepalive=$(yq e ".remote_peer[$i].persistent_keepalive" config.yaml)
 
-        client_ipv4=$(yq e ".clients[$i].ipv4_address" config.yaml)
+        client_ipv4=$(yq e ".remote_peer[$i].ipv4_address" config.yaml)
         if [[ "$ipv4_enabled" == "true" && ( "$client_ipv4" == "null" || -z "$client_ipv4" ) ]]; then
             client_ipv4=$(find_next_ipv4 "$base_ipv4" "$server_ipv4_mask" "${used_ipv4s[@]}")
             if [[ $? -ne 0 ]]; then
@@ -353,7 +353,7 @@ generate_client_configs() {
             used_ipv4s+=("$(echo "$client_ipv4" | cut -d '/' -f 1)")
         fi
 
-        client_ipv6=$(yq e ".clients[$i].ipv6_address" config.yaml)
+        client_ipv6=$(yq e ".remote_peer[$i].ipv6_address" config.yaml)
         if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 && ( "$client_ipv6" == "null" || -z "$client_ipv6" ) ]]; then
             client_ipv6=$(find_next_ipv6 "$base_ipv6" "$server_ipv6_mask" "${used_ipv6s[@]}")
             if [[ $? -ne 0 ]]; then
@@ -363,9 +363,9 @@ generate_client_configs() {
             used_ipv6s+=("$(echo "$client_ipv6" | cut -d '/' -f 1)")
         fi
 
-        yq e -i ".clients[$i].ipv4_address = \"$client_ipv4\"" config.yaml.tmp
+        yq e -i ".remote_peer[$i].ipv4_address = \"$client_ipv4\"" config.yaml.tmp
         if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
-            yq e -i ".clients[$i].ipv6_address = \"$client_ipv6\"" config.yaml.tmp
+            yq e -i ".remote_peer[$i].ipv6_address = \"$client_ipv6\"" config.yaml.tmp
         fi
 
         client_key_dir="$(dirname "$0")/keys/${client_name}-${interface_name}"
@@ -385,7 +385,7 @@ generate_client_configs() {
         client_allowed_ips_combined="${client_ipv4_ip}/32$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", ${client_ipv6_ip}/128" )"
 
         # Handle name change cleanup
-        old_name=$(yq e ".clients[$i].name" /etc/wireguard/config.yaml.backup)
+        old_name=$(yq e ".remote_peer[$i].name" /etc/wireguard/config.yaml.backup)
         if [[ "$old_name" != "$client_name" && -n "$old_name" ]]; then
             rm -f "$(dirname "$0")/wireguard-configs/${old_name}-${interface_name}.conf"
             rm -rf "$(dirname "$0")/keys/${old_name}-${interface_name}"
@@ -458,17 +458,17 @@ configure_firewall() {
     local port="$1"
     local vpn_ipv4_subnet="$2"
     local vpn_ipv6_subnet="$3"
-    local host_interface=$(yq e '.server.host_interface' config.yaml)
-    local ipv4_nat=$(yq e '.server.ipv4.nat' config.yaml)
-    local ipv6_nat=$(yq e '.server.ipv6.nat' config.yaml)
-    local ipv4_dynamic=$(yq e '.server.ipv4.dynamic' config.yaml)
-    local ipv6_dynamic=$(yq e '.server.ipv6.dynamic' config.yaml)
-    local ipv4_enabled=$(yq e '.server.ipv4.enabled' config.yaml)
-    local ipv6_enabled=$(yq e '.server.ipv6.enabled' config.yaml)
+    local host_interface=$(yq e '.local_peer.host_interface' config.yaml)
+    local ipv4_nat=$(yq e '.local_peer.ipv4.nat44' config.yaml)
+    local ipv6_nat=$(yq e '.local_peer.ipv6.nat66' config.yaml)
+    local ipv4_dynamic=$(yq e '.local_peer.ipv4.dynamic' config.yaml)
+    local ipv6_dynamic=$(yq e '.local_peer.ipv6.dynamic' config.yaml)
+    local ipv4_enabled=$(yq e '.local_peer.ipv4.enabled' config.yaml)
+    local ipv6_enabled=$(yq e '.local_peer.ipv6.enabled' config.yaml)
 
-    # New parameters for manual SNAT IP specification
-    local ipv4_snat_ip=$(yq e '.server.ipv4.snat_ip' config.yaml)
-    local ipv6_snat_ip=$(yq e '.server.ipv6.snat_ip' config.yaml)
+    # New parameters for manual SNAT IP specification with updated names
+    local ipv4_snat_ip=$(yq e '.local_peer.ipv4.nat44_public_IP' config.yaml)
+    local ipv6_snat_ip=$(yq e '.local_peer.ipv6.nat66_public_IP' config.yaml)
 
     # Validate required variables
     if [[ -z "$host_interface" || "$host_interface" == "null" ]]; then
@@ -499,12 +499,12 @@ configure_firewall() {
 
     # Validate SNAT IPs when NAT is enabled but not dynamic
     if [[ "$ipv4_nat" == "true" && "$ipv4_dynamic" != "true" && -z "$ipv4_snat_ip" ]]; then
-        echo "Error: No IPv4 SNAT IP available. Either specify server.ipv4.snat_ip, ensure host_interface has an IPv4, or set ipv4.dynamic to true."
+        echo "Error: No IPv4 SNAT IP available. Either specify local_peer.ipv4.nat44_public_IP, ensure host_interface has an IPv4, or set ipv4.dynamic to true."
         return 1
     fi
 
     if [[ "$ipv6_nat" == "true" && "$ipv6_dynamic" != "true" && -z "$ipv6_snat_ip" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
-        echo "Error: No IPv6 SNAT IP available. Either specify server.ipv6.snat_ip, ensure host_interface has an IPv6, or set ipv6.dynamic to true."
+        echo "Error: No IPv6 SNAT IP available. Either specify local_peer.ipv6.nat66_public_IP, ensure host_interface has an IPv6, or set ipv6.dynamic to true."
         return 1
     fi
 
@@ -621,7 +621,7 @@ clear_firewall_rules() {
     nft delete table inet wireguard 2>/dev/null || echo "No WireGuard table found in running config, skipping."
 }
 
-interface_name=$(yq e '.server.interface_name' config.yaml 2>/dev/null || echo "wg0")
+interface_name=$(yq e '.local_peer.interface_name' config.yaml 2>/dev/null || echo "wg0")
 [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
 
 if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
@@ -667,6 +667,17 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
         echo "Error: Failed to generate configurations."
         exit 1
     fi
+
+    ipv4_enabled=$(yq e '.local_peer.ipv4.enabled' config.yaml)
+    ipv6_enabled=$(yq e '.local_peer.ipv6.enabled' config.yaml)
+    server_ipv4=$(yq e '.local_peer.ipv4.gateway' config.yaml)
+    server_ipv4_ip=$(echo "$server_ipv4" | cut -d '/' -f 1)
+    server_ipv4_mask=$(echo "$server_ipv4" | cut -d '/' -f 2)
+    base_ipv4=$(echo "$server_ipv4_ip" | cut -d '.' -f 1-3)
+    server_ipv6=$(yq e '.local_peer.ipv6.gateway' config.yaml)
+    server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
+    server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
+    port=$(yq e '.local_peer.port' config.yaml)
 
     if [[ "$ipv4_enabled" == "true" ]]; then
         vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
@@ -740,16 +751,16 @@ else
                 exit 1
             fi
 
-            port=$(yq e '.server.port' config.yaml)
-            interface_name=$(yq e '.server.interface_name' config.yaml)
+            port=$(yq e '.local_peer.port' config.yaml)
+            interface_name=$(yq e '.local_peer.interface_name' config.yaml)
             [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
-            ipv4_enabled=$(yq e '.server.ipv4.enabled' config.yaml)
-            server_ipv4=$(yq e '.server.ipv4.address' config.yaml)
+            ipv4_enabled=$(yq e '.local_peer.ipv4.enabled' config.yaml)
+            server_ipv4=$(yq e '.local_peer.ipv4.gateway' config.yaml)
             server_ipv4_ip=$(echo "$server_ipv4" | cut -d '/' -f 1)
             server_ipv4_mask=$(echo "$server_ipv4" | cut -d '/' -f 2)
             base_ipv4=$(echo "$server_ipv4_ip" | cut -d '.' -f 1-3)
-            ipv6_enabled=$(yq e '.server.ipv6.enabled' config.yaml)
-            server_ipv6=$(yq e '.server.ipv6.address' config.yaml)
+            ipv6_enabled=$(yq e '.local_peer.ipv6.enabled' config.yaml)
+            server_ipv6=$(yq e '.local_peer.ipv6.gateway' config.yaml)
             server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
             server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
             vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
@@ -761,7 +772,7 @@ else
                     exit 0
                 fi
 
-                old_interface_name=$(yq e '.server.interface_name' /etc/wireguard/config.yaml.backup)
+                old_interface_name=$(yq e '.local_peer.interface_name' /etc/wireguard/config.yaml.backup)
                 [[ "$old_interface_name" == "null" || -z "$old_interface_name" ]] && old_interface_name="wg0"
                 if [[ "$interface_name" != "$old_interface_name" ]]; then
                     echo "Interface name changed from '$old_interface_name' to '$interface_name'. Cleaning up old interface..."
@@ -774,8 +785,8 @@ else
                     fi
                 fi
 
-                yq e '.server' config.yaml > /tmp/server_new.yaml
-                yq e '.server' /etc/wireguard/config.yaml.backup > /tmp/server_old.yaml
+                yq e '.local_peer' config.yaml > /tmp/server_new.yaml
+                yq e '.local_peer' /etc/wireguard/config.yaml.backup > /tmp/server_old.yaml
                 if ! cmp -s /tmp/server_new.yaml /tmp/server_old.yaml; then
                     echo "Server configuration changed. Regenerating all configurations..."
                     if ! generate_full_configs; then
@@ -806,14 +817,14 @@ else
                     fi
                 else
                     changed_clients=()
-                    number_of_clients=$(yq e '.clients | length' config.yaml)
-                    old_clients=$(yq e '.clients | length' /etc/wireguard/config.yaml.backup)
+                    number_of_clients=$(yq e '.remote_peer | length' config.yaml)
+                    old_clients=$(yq e '.remote_peer | length' /etc/wireguard/config.yaml.backup)
                     max_clients=$((number_of_clients > old_clients ? number_of_clients : old_clients))
 
                     for i in $(seq 0 $((max_clients - 1))); do
-                        new_name=$(yq e ".clients[$i].name" config.yaml)
-                        old_name=$(yq e ".clients[$i].name" /etc/wireguard/config.yaml.backup)
-                        if [[ "$new_name" != "$old_name" ]] || ! cmp -s <(yq e ".clients[$i]" config.yaml) <(yq e ".clients[$i]" /etc/wireguard/config.yaml.backup); then
+                        new_name=$(yq e ".remote_peer[$i].name" config.yaml)
+                        old_name=$(yq e ".remote_peer[$i].name" /etc/wireguard/config.yaml.backup)
+                        if [[ "$new_name" != "$old_name" ]] || ! cmp -s <(yq e ".remote_peer[$i]" config.yaml) <(yq e ".remote_peer[$i]" /etc/wireguard/config.yaml.backup); then
                             changed_clients+=("$i")
                         fi
                     done
@@ -834,7 +845,7 @@ else
                         echo "Updated client configurations:"
                         mkdir -p "$(dirname "$0")/wireguard-configs/qr"
                         for i in "${changed_clients[@]}"; do
-                            client_name=$(yq e ".clients[$i].name" config.yaml)
+                            client_name=$(yq e ".remote_peer[$i].name" config.yaml)
                             client_conf="$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
                             qr_file="$(dirname "$0")/wireguard-configs/qr/${client_name}-${interface_name}.png"
                             if [[ -f "$client_conf" ]]; then
@@ -904,7 +915,7 @@ else
             fi
             ;;
         2)
-            interface_name=$(yq e '.server.interface_name' config.yaml)
+            interface_name=$(yq e '.local_peer.interface_name' config.yaml)
             [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
             systemctl disable --now wg-quick@"$interface_name"
 
