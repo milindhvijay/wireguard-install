@@ -255,32 +255,36 @@ generate_client_configs() {
             echo "Removed old client configuration and keys for '$old_name'."
         fi
 
-        # Remove the old [Peer] entry by filtering it out
+        # Remove the old [Peer] entry and normalize spacing
         temp_file=$(mktemp)
         awk -v ip="$client_allowed_ips_ipv4" '
-        BEGIN { in_peer = 0; keep = 1; buffer = "" }
+        BEGIN { in_peer = 0; keep = 1; buffer = ""; first_peer = 1 }
         /^\[Peer\]$/ {
-            if (in_peer && !keep) { print buffer }
-            in_peer = 1; keep = 1; buffer = $0 "\n"; next
+            if (in_peer && keep) {
+                if (!first_peer) { print "" }
+                print buffer
+            }
+            in_peer = 1; keep = 1; buffer = $0 "\n"; first_peer = 0; next
         }
         in_peer && /AllowedIPs =/ {
             if ($0 ~ ip) { keep = 0 }
             buffer = buffer $0 "\n"; next
         }
         in_peer && /^$/ {
-            if (keep) { print buffer }
             in_peer = 0; buffer = ""; next
         }
         in_peer { buffer = buffer $0 "\n"; next }
         { print }
-        END { if (in_peer && keep) { print buffer } }
+        END { if (in_peer && keep) { if (!first_peer) { print "" } print buffer } }
         ' /etc/wireguard/"${interface_name}.conf" > "$temp_file"
         mv "$temp_file" /etc/wireguard/"${interface_name}.conf"
         chmod 600 /etc/wireguard/"${interface_name}.conf"
 
-        # Append the new [Peer] entry
+        # Append the new [Peer] entry without leading blank line
+        if [[ -s /etc/wireguard/"${interface_name}.conf" && $(tail -n 1 /etc/wireguard/"${interface_name}.conf") != "" ]]; then
+            echo "" >> /etc/wireguard/"${interface_name}.conf"
+        fi
         cat << EOF >> /etc/wireguard/"${interface_name}.conf"
-
 [Peer]
 PublicKey = $client_public_key
 PresharedKey = $psk
