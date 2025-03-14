@@ -286,21 +286,24 @@ configure_firewall() {
     local vpn_ipv4_subnet="$2"
     local vpn_ipv6_subnet="$3"
     local host_interface=$(yq e '.server.host_interface' config.yaml)
+    local ipv4_nat=$(yq e '.server.ipv4.nat' config.yaml)
+    local ipv6_nat=$(yq e '.server.ipv6.nat' config.yaml)
     local ipv4_dynamic=$(yq e '.server.ipv4.dynamic' config.yaml)
     local ipv6_dynamic=$(yq e '.server.ipv6.dynamic' config.yaml)
 
-    server_ipv4_static=$(ip -4 addr show "$host_interface" | grep -oP 'inet \K[\d.]+' | head -n 1)
-    if [[ -z "$server_ipv4_static" && "$ipv4_enabled" == "true" && "$ipv4_dynamic" != "true" ]]; then
-        echo "Error: Could not detect IPv4 address for $host_interface and ipv4_dynamic is not set to true."
-        return 1
-    fi
-    server_ipv6_static=$(ip -6 addr show "$host_interface" scope global | grep -oP 'inet6 \K[0-9a-f:]+' | head -n 1)
-    if [[ -z "$server_ipv6_static" && "$ipv6_enabled" == "true" && "$ipv6_dynamic" != "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
-        echo "Error: Could not detect IPv6 address for $host_interface and ipv6_dynamic is not set to true."
-        return 1
-    fi
+    if [[ "$ipv4_nat" == "true" || "$ipv6_nat" == "true" ]]; then
+        server_ipv4_static=$(ip -4 addr show "$host_interface" | grep -oP 'inet \K[\d.]+' | head -n 1)
+        if [[ -z "$server_ipv4_static" && "$ipv4_nat" == "true" && "$ipv4_dynamic" != "true" ]]; then
+            echo "Error: Could not detect IPv4 address for $host_interface and ipv4.dynamic is not set to true."
+            return 1
+        fi
+        server_ipv6_static=$(ip -6 addr show "$host_interface" scope global | grep -oP 'inet6 \K[0-9a-f:]+' | head -n 1)
+        if [[ -z "$server_ipv6_static" && "$ipv6_nat" == "true" && "$ipv6_dynamic" != "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
+            echo "Error: Could not detect IPv6 address for $host_interface and ipv6.dynamic is not set to true."
+            return 1
+        fi
 
-    cat << EOF > /etc/nftables.conf
+        cat << EOF > /etc/nftables.conf
 #!/usr/sbin/nft -f
 
 flush ruleset
@@ -308,17 +311,26 @@ flush ruleset
 table inet wireguard {
     chain postrouting {
         type nat hook postrouting priority 100; policy accept;
-        $( [[ "$ipv4_enabled" == "true" && "$ipv4_dynamic" == "true" ]] && echo "ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" masquerade persistent" )
-        $( [[ "$ipv4_enabled" == "true" && "$ipv4_dynamic" != "true" && -n "$server_ipv4_static" ]] && echo "ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" snat to $server_ipv4_static persistent" )
-        $( [[ "$ipv6_enabled" == "true" && "$ipv6_dynamic" == "true" ]] && echo "ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" masquerade persistent" )
-        $( [[ "$ipv6_enabled" == "true" && "$ipv6_dynamic" != "true" && -n "$server_ipv6_static" ]] && echo "ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" snat to $server_ipv6_static persistent" )
+        $( [[ "$ipv4_nat" == "true" && "$ipv4_enabled" == "true" && "$ipv4_dynamic" == "true" ]] && echo "ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" masquerade persistent" )
+        $( [[ "$ipv4_nat" == "true" && "$ipv4_enabled" == "true" && "$ipv4_dynamic" != "true" && -n "$server_ipv4_static" ]] && echo "ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" snat to $server_ipv4_static persistent" )
+        $( [[ "$ipv6_nat" == "true" && "$ipv6_enabled" == "true" && "$ipv6_dynamic" == "true" ]] && echo "ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" masquerade persistent" )
+        $( [[ "$ipv6_nat" == "true" && "$ipv6_enabled" == "true" && "$ipv6_dynamic" != "true" && -n "$server_ipv6_static" ]] && echo "ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" snat to $server_ipv6_static persistent" )
     }
 }
 EOF
 
-    nft -f /etc/nftables.conf
-    systemctl enable nftables
-    systemctl restart nftables
+        nft -f /etc/nftables.conf
+        systemctl enable nftables
+        systemctl restart nftables
+    else
+        echo "Both ipv4.nat and ipv6.nat are false; no NAT rules will be configured."
+        cat << EOF > /etc/nftables.conf
+#!/usr/sbin/nft -f
+
+flush ruleset
+EOF
+        nft -f /etc/nftables.conf
+    fi
 }
 
 clear_firewall_rules() {
