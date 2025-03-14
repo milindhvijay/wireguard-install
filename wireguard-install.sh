@@ -19,6 +19,88 @@ else
     exit 1
 fi
 
+# Helper function to check if an IPv4 address is in use
+is_ipv4_in_use() {
+    local ip="$1"
+    local used_ips=("${@:2}")
+    for used_ip in "${used_ips[@]}"; do
+        if [[ "$used_ip" == "$ip" ]]; then
+            return 0  # True, IP is in use
+        fi
+    done
+    return 1  # False, IP is not in use
+}
+
+# Helper function to check if an IPv6 address is in use
+is_ipv6_in_use() {
+    local ip="$1"
+    local used_ips=("${@:2}")
+    for used_ip in "${used_ips[@]}"; do
+        if [[ "$used_ip" == "$ip" ]]; then
+            return 0  # True, IP is in use
+        fi
+    done
+    return 1  # False, IP is not in use
+}
+
+# Helper function to find the next available IPv4 address
+find_next_ipv4() {
+    local base_ipv4="$1"
+    local mask="$2"
+    local used_ips=("${@:3}")
+    local octet=2  # Start after the server IP (e.g., 10.0.0.1 -> 10.0.0.2)
+    local max_octet=$((256 - 1))  # Assuming a /24 subnet for simplicity
+    while [[ $octet -le $max_octet ]]; do
+        local candidate="${base_ipv4}.${octet}"
+        if ! is_ipv4_in_use "$candidate" "${used_ips[@]}"; then
+            echo "$candidate/$mask"
+            return 0
+        fi
+        ((octet++))
+    done
+    echo "Error: No available IPv4 addresses in $base_ipv4.0/$mask."
+    return 1
+}
+
+# Helper function to find the next available IPv6 address
+find_next_ipv6() {
+    local base_ipv6="$1"
+    local mask="$2"
+    local used_ips=("${@:3}")
+    local segment=2  # Start after the server IP (e.g., fd00::1 -> fd00::2)
+    local max_segment=$((16#ffff))  # Assuming a /112 subnet for simplicity
+    while [[ $segment -le $max_segment ]]; do
+        local candidate_segment=$(printf "%x" "$segment")
+        local candidate="${base_ipv6}:${candidate_segment}"
+        if ! is_ipv6_in_use "$candidate" "${used_ips[@]}"; then
+            echo "$candidate/$mask"
+            return 0
+        fi
+        ((segment++))
+    done
+    echo "Error: No available IPv6 addresses in $base_ipv6::$mask."
+    return 1
+}
+
+# Helper function to check for duplicate client names
+check_duplicate_client_names() {
+    local number_of_clients=$(yq e '.clients | length' config.yaml)
+    local -A names_seen
+    for i in $(seq 0 $(($number_of_clients - 1))); do
+        local client_name=$(yq e ".clients[$i].name" config.yaml)
+        if [[ -z "$client_name" || "$client_name" == "null" ]]; then
+            echo "Error: Client at index $i has no name specified in config.yaml."
+            return 1
+        fi
+        if [[ -n "${names_seen[$client_name]}" ]]; then
+            echo "Error: Duplicate client name '$client_name' found in config.yaml."
+            return 1
+        fi
+        names_seen["$client_name"]=1
+    done
+    return 0
+}
+
 cleanup_conflicting_interfaces() {
     local new_ipv4="$1"
     local new_ipv6="$2"
@@ -39,6 +121,11 @@ cleanup_conflicting_interfaces() {
 }
 
 generate_full_configs() {
+    # Check for duplicate client names before proceeding
+    if ! check_duplicate_client_names; then
+        return 1
+    fi
+
     port=$(yq e '.server.port' config.yaml)
     mtu=$(yq e '.server.mtu' config.yaml)
     [[ "$mtu" == "null" || -z "$mtu" ]] && mtu=1420
@@ -50,14 +137,12 @@ generate_full_configs() {
     server_ipv4_ip=$(echo "$server_ipv4" | cut -d '/' -f 1)
     server_ipv4_mask=$(echo "$server_ipv4" | cut -d '/' -f 2)
     base_ipv4=$(echo "$server_ipv4_ip" | cut -d '.' -f 1-3)
-    server_ipv4_last_octet=$(echo "$server_ipv4_ip" | cut -d '.' -f 4)
     ipv6_enabled=$(yq e '.server.ipv6.enabled' config.yaml)
     server_ipv6=$(yq e '.server.ipv6.address' config.yaml)
     server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
     server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
     vpn_ipv6_subnet="${server_ipv6_ip}/${server_ipv6_mask}"
     base_ipv6=$(echo "$server_ipv6_ip" | sed 's/:[0-9a-f]*$//')
-    server_ipv6_last_segment=$(echo "$server_ipv6_ip" | grep -o '[0-9a-f]*$')
 
     cleanup_conflicting_interfaces "$server_ipv4_ip" "$server_ipv6_ip" "$interface_name"
 
@@ -102,6 +187,16 @@ EOF
         fi
     fi
 
+    # Collect all assigned IPs from config.yaml
+    local -a used_ipv4s=("$server_ipv4_ip")
+    local -a used_ipv6s=("$server_ipv6_ip")
+    for i in $(seq 0 $(($number_of_clients - 1))); do
+        local ipv4=$(yq e ".clients[$i].ipv4_address" config.yaml)
+        local ipv6=$(yq e ".clients[$i].ipv6_address" config.yaml)
+        [[ "$ipv4" != "null" && -n "$ipv4" ]] && used_ipv4s+=("$(echo "$ipv4" | cut -d '/' -f 1)")
+        [[ "$ipv6" != "null" && -n "$ipv6" ]] && used_ipv6s+=("$(echo "$ipv6" | cut -d '/' -f 1)")
+    done
+
     for i in $(seq 0 $(($number_of_clients - 1))); do
         client_name=$(yq e ".clients[$i].name" config.yaml)
         client_dns=$(yq e ".clients[$i].dns" config.yaml)
@@ -110,11 +205,24 @@ EOF
         client_allowed_ips=$(yq e ".clients[$i].allowed_ips" config.yaml)
         client_persistent_keepalive=$(yq e ".clients[$i].persistent_keepalive" config.yaml)
 
-        octet=$((server_ipv4_last_octet + i + 1))
-        client_ipv4="${base_ipv4}.${octet}/$server_ipv4_mask"
-        if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
-            client_ipv6_last_segment=$(printf "%x" $((16#$server_ipv6_last_segment + i + 1)))
-            client_ipv6="${base_ipv6}:${client_ipv6_last_segment}/$server_ipv6_mask"
+        client_ipv4=$(yq e ".clients[$i].ipv4_address" config.yaml)
+        if [[ "$ipv4_enabled" == "true" && ( "$client_ipv4" == "null" || -z "$client_ipv4" ) ]]; then
+            client_ipv4=$(find_next_ipv4 "$base_ipv4" "$server_ipv4_mask" "${used_ipv4s[@]}")
+            if [[ $? -ne 0 ]]; then
+                echo "$client_ipv4"
+                return 1
+            fi
+            used_ipv4s+=("$(echo "$client_ipv4" | cut -d '/' -f 1)")
+        fi
+
+        client_ipv6=$(yq e ".clients[$i].ipv6_address" config.yaml)
+        if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 && ( "$client_ipv6" == "null" || -z "$client_ipv6" ) ]]; then
+            client_ipv6=$(find_next_ipv6 "$base_ipv6" "$server_ipv6_mask" "${used_ipv6s[@]}")
+            if [[ $? -ne 0 ]]; then
+                echo "$client_ipv6"
+                return 1
+            fi
+            used_ipv6s+=("$(echo "$client_ipv6" | cut -d '/' -f 1)")
         fi
 
         yq e -i ".clients[$i].ipv4_address = \"$client_ipv4\"" config.yaml.tmp
@@ -134,12 +242,14 @@ EOF
                   "$client_key_dir/${client_name}-${interface_name}-public.key" \
                   "$client_key_dir/${client_name}-${interface_name}-psk.key"
 
+        client_ipv4_ip=$(echo "$client_ipv4" | cut -d '/' -f 1)
+        client_ipv6_ip=$(echo "$client_ipv6" | cut -d '/' -f 1)
         cat << EOF >> /etc/wireguard/"${interface_name}.conf"
 
 [Peer]
 PublicKey = $client_public_key
 PresharedKey = $psk
-AllowedIPs = ${base_ipv4}.${octet}/32$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", ${base_ipv6}:${client_ipv6_last_segment}/128" )
+AllowedIPs = ${client_ipv4_ip}/32$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", ${client_ipv6_ip}/128" )
 EOF
 
         cat << EOF > "$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
@@ -166,6 +276,12 @@ EOF
 
 generate_client_configs() {
     local changed_clients=("$@")
+
+    # Check for duplicate client names before proceeding
+    if ! check_duplicate_client_names; then
+        return 1
+    fi
+
     port=$(yq e '.server.port' config.yaml)
     interface_name=$(yq e '.server.interface_name' config.yaml)
     [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
@@ -174,14 +290,12 @@ generate_client_configs() {
     server_ipv4_ip=$(echo "$server_ipv4" | cut -d '/' -f 1)
     server_ipv4_mask=$(echo "$server_ipv4" | cut -d '/' -f 2)
     base_ipv4=$(echo "$server_ipv4_ip" | cut -d '.' -f 1-3)
-    server_ipv4_last_octet=$(echo "$server_ipv4_ip" | cut -d '.' -f 4)
     ipv6_enabled=$(yq e '.server.ipv6.enabled' config.yaml)
     server_ipv6=$(yq e '.server.ipv6.address' config.yaml)
     server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
     server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
     vpn_ipv6_subnet="${server_ipv6_ip}/${server_ipv6_mask}"
     base_ipv6=$(echo "$server_ipv6_ip" | sed 's/:[0-9a-f]*$//')
-    server_ipv6_last_segment=$(echo "$server_ipv6_ip" | grep -o '[0-9a-f]*$')
     server_public_key=$(wg show "$interface_name" public-key)
 
     public_endpoint=$(yq e '.server.public_endpoint' config.yaml)
@@ -210,6 +324,17 @@ generate_client_configs() {
     original_umask=$(umask)
     umask 077
 
+    # Collect all assigned IPs from config.yaml and existing config
+    local -a used_ipv4s=("$server_ipv4_ip")
+    local -a used_ipv6s=("$server_ipv6_ip")
+    local number_of_clients=$(yq e '.clients | length' config.yaml)
+    for i in $(seq 0 $(($number_of_clients - 1))); do
+        local ipv4=$(yq e ".clients[$i].ipv4_address" config.yaml)
+        local ipv6=$(yq e ".clients[$i].ipv6_address" config.yaml)
+        [[ "$ipv4" != "null" && -n "$ipv4" ]] && used_ipv4s+=("$(echo "$ipv4" | cut -d '/' -f 1)")
+        [[ "$ipv6" != "null" && -n "$ipv6" ]] && used_ipv6s+=("$(echo "$ipv6" | cut -d '/' -f 1)")
+    done
+
     for i in "${changed_clients[@]}"; do
         client_name=$(yq e ".clients[$i].name" config.yaml)
         client_dns=$(yq e ".clients[$i].dns" config.yaml)
@@ -218,11 +343,24 @@ generate_client_configs() {
         client_allowed_ips=$(yq e ".clients[$i].allowed_ips" config.yaml)
         client_persistent_keepalive=$(yq e ".clients[$i].persistent_keepalive" config.yaml)
 
-        octet=$((server_ipv4_last_octet + i + 1))
-        client_ipv4="${base_ipv4}.${octet}/$server_ipv4_mask"
-        if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
-            client_ipv6_last_segment=$(printf "%x" $((16#$server_ipv6_last_segment + i + 1)))
-            client_ipv6="${base_ipv6}:${client_ipv6_last_segment}/$server_ipv6_mask"
+        client_ipv4=$(yq e ".clients[$i].ipv4_address" config.yaml)
+        if [[ "$ipv4_enabled" == "true" && ( "$client_ipv4" == "null" || -z "$client_ipv4" ) ]]; then
+            client_ipv4=$(find_next_ipv4 "$base_ipv4" "$server_ipv4_mask" "${used_ipv4s[@]}")
+            if [[ $? -ne 0 ]]; then
+                echo "$client_ipv4"
+                return 1
+            fi
+            used_ipv4s+=("$(echo "$client_ipv4" | cut -d '/' -f 1)")
+        fi
+
+        client_ipv6=$(yq e ".clients[$i].ipv6_address" config.yaml)
+        if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 && ( "$client_ipv6" == "null" || -z "$client_ipv6" ) ]]; then
+            client_ipv6=$(find_next_ipv6 "$base_ipv6" "$server_ipv6_mask" "${used_ipv6s[@]}")
+            if [[ $? -ne 0 ]]; then
+                echo "$client_ipv6"
+                return 1
+            fi
+            used_ipv6s+=("$(echo "$client_ipv6" | cut -d '/' -f 1)")
         fi
 
         yq e -i ".clients[$i].ipv4_address = \"$client_ipv4\"" config.yaml.tmp
@@ -242,22 +380,20 @@ generate_client_configs() {
                   "$client_key_dir/${client_name}-${interface_name}-public.key" \
                   "$client_key_dir/${client_name}-${interface_name}-psk.key"
 
-        # Calculate the AllowedIPs for this client
-        client_allowed_ips_ipv4="${base_ipv4}.${octet}/32"
-        client_allowed_ips_ipv6=$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo "${base_ipv6}:${client_ipv6_last_segment}/128" )
-        client_allowed_ips_combined="$client_allowed_ips_ipv4$( [[ -n "$client_allowed_ips_ipv6" ]] && echo ", $client_allowed_ips_ipv6" )"
+        client_ipv4_ip=$(echo "$client_ipv4" | cut -d '/' -f 1)
+        client_ipv6_ip=$(echo "$client_ipv6" | cut -d '/' -f 1)
+        client_allowed_ips_combined="${client_ipv4_ip}/32$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", ${client_ipv6_ip}/128" )"
 
         # Handle name change cleanup
         old_name=$(yq e ".clients[$i].name" /etc/wireguard/config.yaml.backup)
         if [[ "$old_name" != "$client_name" && -n "$old_name" ]]; then
             rm -f "$(dirname "$0")/wireguard-configs/${old_name}-${interface_name}.conf"
             rm -rf "$(dirname "$0")/keys/${old_name}-${interface_name}"
-            echo "Removed old client configuration and keys for '$old_name'."
         fi
 
         # Remove the old [Peer] entry and preserve all others with consistent spacing
         temp_file=$(mktemp)
-        awk -v ip="$client_allowed_ips_ipv4" '
+        awk -v ip="$client_ipv4_ip" '
         BEGIN { in_section = 0; buffer = ""; need_blank = 0 }
         /^\[(Interface|Peer)\]$/ {
             if (in_section && keep) {
@@ -297,7 +433,6 @@ PresharedKey = $psk
 AllowedIPs = $client_allowed_ips_combined
 EOF
 
-        # Generate the client config file
         cat << EOF > "$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
 [Interface]
 Address = $client_ipv4$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", $client_ipv6" )
@@ -448,6 +583,11 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
         exit 1
     fi
 
+    # Check for duplicate client names before proceeding with fresh install
+    if ! check_duplicate_client_names; then
+        exit 1
+    fi
+
     mkdir -p /etc/wireguard
     cp config.yaml /etc/wireguard/config.yaml.backup
     chmod 600 /etc/wireguard/config.yaml.backup
@@ -521,6 +661,11 @@ else
         1)
             if [[ ! -f config.yaml ]]; then
                 echo "Error: 'config.yaml' not found in the current directory."
+                exit 1
+            fi
+
+            # Check for duplicate client names before proceeding with regeneration
+            if ! check_duplicate_client_names; then
                 exit 1
             fi
 
@@ -695,24 +840,25 @@ else
             if [[ -f /etc/nftables.conf ]]; then
                 echo "Cleaning up WireGuard-specific nftables rules..."
                 cp /etc/nftables.conf /etc/nftables.conf.backup-$(date +%F-%T)
-                sed -i '/table inet wireguard {/,/}/d' /etc/nftables.conf
+                # Remove the wireguard table block and clean up any trailing newlines or braces
+                sed -i '/table inet wireguard {/,/}/d; /^\s*$/d; /^}/d' /etc/nftables.conf
 
-                if [[ ! -s /etc/nftables.conf || $(grep -v '^#!/usr/sbin/nft -f' /etc/nftables.conf | wc -l) -eq 0 ]]; then
+                if [[ ! -s /etc/nftables.conf || $(grep -v '^#!/usr/sbin/nft -f' /etc/nftables.conf | grep -v '^\s*$' | wc -l) -eq 0 ]]; then
                     rm -f /etc/nftables.conf
                     systemctl disable nftables
                     systemctl stop nftables
-                    echo "Removed /etc/nftables.conf and disabled nftables service (no other rules present)."
+                    echo "Removed /etc/nftables.conf and disabled nftables service (no meaningful rules remain)."
                 else
-                    nft -f /etc/nftables.conf || {
+                    if ! nft -f /etc/nftables.conf; then
                         echo "Error: Failed to apply updated nftables configuration. Restoring backup."
                         mv /etc/nftables.conf.backup-$(date +%F-%T) /etc/nftables.conf
                         nft -f /etc/nftables.conf
-                    }
-                    echo "Updated /etc/nftables.conf to remove WireGuard rules."
+                    else
+                        echo "Updated /etc/nftables.conf to remove WireGuard rules."
+                    fi
                 fi
             fi
 
-            # Rest of the removal logic remains unchanged
             if [[ -d "$(dirname "$0")/wireguard-configs" ]]; then
                 rm -rf "$(dirname "$0")/wireguard-configs"
                 echo "Removed client configuration directory (including QR codes): $(dirname "$0")/wireguard-configs"
@@ -724,9 +870,9 @@ else
 
             rm -rf /etc/wireguard
             if [[ "$os" == "ubuntu" || "$os" == "debian" ]]; then
-                apt-get remove -y wireguard wireguard-tools nftables
+                apt-get remove -y wireguard wireguard-tools
             elif [[ "$os" == "centos" || "$os" == "fedora" ]]; then
-                dnf remove -y wireguard-tools nftables
+                dnf remove -y wireguard-tools
             fi
             echo "WireGuard removed."
             ;;
