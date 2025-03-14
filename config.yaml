@@ -2,37 +2,21 @@
 
 server:
   interface_name: vpn0
-  # UDP port for WireGuard to listen on
   port: 51820
-
-  # Network interface on host to bind to (optional, typically not needed for WireGuard)
   host_interface: eth0
-
-  # MTU for server WireGuard interface
   mtu: 1420
-
-  # Public endpoint (only if server is behind NAT)
-  # Leave empty to auto-detect
   public_endpoint: 5.75.189.129
-
   ipv4_dynamic: true
   ipv6_dynamic: true
-
-  # IP configuration
   ipv4:
     enabled: true
-    # Full IPv4 address with subnet mask for the server
     address: 10.0.1.2/24
     nat: true
-
   ipv6:
     enabled: true
-    # Full IPv6 address with subnet mask for the server
     address: 2a01:4f8:1c1b:743c::12/80
-    # Enable NAT for IPv6 (true for private IPs like fd00::/64, false for public IPs)
     nat: false
 
-# Client configuration
 clients:
   - name: phone1
     dns: 8.8.4.4
