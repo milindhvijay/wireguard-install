@@ -255,51 +255,38 @@ generate_client_configs() {
             echo "Removed old client configuration and keys for '$old_name'."
         fi
 
-        # Remove the old [Peer] entry and ensure consistent spacing
+        # Remove the old [Peer] entry and preserve all others with consistent spacing
         temp_file=$(mktemp)
         awk -v ip="$client_allowed_ips_ipv4" '
-        BEGIN { in_interface = 0; in_peer = 0; buffer = ""; need_blank = 0 }
-        /^\[Interface\]$/ {
-            in_interface = 1; buffer = $0 "\n"; next
+        BEGIN { in_section = 0; buffer = ""; need_blank = 0 }
+        /^\[(Interface|Peer)\]$/ {
+            if (in_section && keep) {
+                if (need_blank) { print "" }
+                print buffer
+                need_blank = 1
+            }
+            in_section = 1; keep = ($1 == "[Interface]" ? 1 : 0); buffer = $0 "\n"; next
         }
-        in_interface && /^\[Peer\]$/ {
-            in_interface = 0; in_peer = 1; keep = 1;
-            if (need_blank) { print "" }
-            print buffer; buffer = $0 "\n"; need_blank = 1; next
-        }
-        in_interface && !/^\[Peer\]$/ {
+        in_section && /AllowedIPs =/ {
+            if ($0 ~ ip) { keep = 0 } else { keep = 1 }
             buffer = buffer $0 "\n"; next
         }
-        in_peer && /^\[Peer\]$/ {
+        in_section && /^$/ {
             if (keep) {
                 if (need_blank) { print "" }
                 print buffer
+                need_blank = 1
             }
-            keep = 1; buffer = $0 "\n"; need_blank = 1; next
+            in_section = 0; buffer = ""; next
         }
-        in_peer && /AllowedIPs =/ {
-            if ($0 ~ ip) { keep = 0 }
-            buffer = buffer $0 "\n"; next
-        }
-        in_peer && /^$/ {
-            if (keep) {
-                if (need_blank) { print "" }
-                print buffer
-            }
-            in_peer = 0; buffer = ""; need_blank = 1; next
-        }
-        in_peer { buffer = buffer $0 "\n"; next }
-        END {
-            if (in_interface) { print buffer }
-            else if (in_peer && keep) { if (need_blank) { print "" } print buffer }
-        }
+        in_section { buffer = buffer $0 "\n"; next }
+        END { if (in_section && keep) { if (need_blank) { print "" } print buffer } }
         ' /etc/wireguard/"${interface_name}.conf" > "$temp_file"
         mv "$temp_file" /etc/wireguard/"${interface_name}.conf"
         chmod 600 /etc/wireguard/"${interface_name}.conf"
 
         # Append the new [Peer] entry with exactly one blank line before it
         if [[ -s /etc/wireguard/"${interface_name}.conf" ]]; then
-            # Remove any trailing blank lines and ensure one blank line
             sed -i -e :a -e '/^\n*$/{$d;N;};/\n$/ba' /etc/wireguard/"${interface_name}.conf"
             echo "" >> /etc/wireguard/"${interface_name}.conf"
         fi
