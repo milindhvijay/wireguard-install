@@ -364,34 +364,36 @@ configure_firewall() {
         echo "#!/usr/sbin/nft -f" > /etc/nftables.conf
     fi
 
-    # Build NAT rules dynamically
-    local nat_rules=""
+    # Build NAT rules as an array to avoid literal \n
+    local -a nat_rules=()
     if [[ "$ipv4_nat" == "true" && "$ipv4_enabled" == "true" ]]; then
         if [[ "$ipv4_dynamic" == "true" ]]; then
-            nat_rules+="ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" masquerade persistent\n"
+            nat_rules+=("ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" masquerade persistent")
         elif [[ -n "$server_ipv4_static" ]]; then
-            nat_rules+="ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" snat to $server_ipv4_static persistent\n"
+            nat_rules+=("ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" snat to $server_ipv4_static persistent")
         fi
     fi
     if [[ "$ipv6_nat" == "true" && "$ipv6_enabled" == "true" ]]; then
         if [[ "$ipv6_dynamic" == "true" ]]; then
-            nat_rules+="ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" masquerade persistent\n"
+            nat_rules+=("ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" masquerade persistent")
         elif [[ -n "$server_ipv6_static" ]]; then
-            nat_rules+="ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" snat to $server_ipv6_static persistent\n"
+            nat_rules+=("ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" snat to $server_ipv6_static persistent")
         fi
     fi
 
     # Only append the table if there are NAT rules to add
-    if [[ -n "$nat_rules" ]]; then
-        cat << EOF >> /etc/nftables.conf
-
-table inet wireguard {
-    chain postrouting {
-        type nat hook postrouting priority 100; policy accept;
-        $nat_rules
-    }
-}
-EOF
+    if [[ ${#nat_rules[@]} -gt 0 ]]; then
+        {
+            echo ""
+            echo "table inet wireguard {"
+            echo "    chain postrouting {"
+            echo "        type nat hook postrouting priority 100; policy accept;"
+            for rule in "${nat_rules[@]}"; do
+                echo "        $rule;"
+            done
+            echo "    }"
+            echo "}"
+        } >> /etc/nftables.conf
     else
         echo "No NAT rules required (ipv4.nat and ipv6.nat are false or conditions not met). Skipping firewall configuration."
         return 0
