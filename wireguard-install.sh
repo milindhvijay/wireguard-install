@@ -255,14 +255,15 @@ generate_client_configs() {
             echo "Removed old client configuration and keys for '$old_name'."
         fi
 
-        # Remove the old [Peer] entry and preserve all others with consistent spacing
+        # Remove the old [Peer] entry and ensure consistent single-line spacing
         temp_file=$(mktemp)
         awk -v ip="$client_allowed_ips_ipv4" '
-        BEGIN { in_peer = 0; buffer = ""; print_blank = 0 }
+        BEGIN { in_peer = 0; buffer = ""; need_blank = 0 }
         /^\[Peer\]$/ {
-            if (in_peer) {
-                if (keep) { if (print_blank) { print "" } print buffer }
-                print_blank = 1
+            if (in_peer && keep) {
+                if (need_blank) { print "" }
+                print buffer
+                need_blank = 1
             }
             in_peer = 1; keep = 1; buffer = $0 "\n"; next
         }
@@ -271,18 +272,24 @@ generate_client_configs() {
             buffer = buffer $0 "\n"; next
         }
         in_peer && /^$/ {
-            if (keep) { if (print_blank) { print "" } print buffer }
-            in_peer = 0; buffer = ""; print_blank = 1; next
+            if (keep) {
+                if (need_blank) { print "" }
+                print buffer
+                need_blank = 1
+            }
+            in_peer = 0; buffer = ""; next
         }
         in_peer { buffer = buffer $0 "\n"; next }
-        { print; print_blank = ($0 == "[Interface]") }
-        END { if (in_peer && keep) { if (print_blank) { print "" } print buffer } }
+        { if (need_blank && $0 != "") { print "" } print; need_blank = ($0 != "") }
+        END { if (in_peer && keep) { if (need_blank) { print "" } print buffer } }
         ' /etc/wireguard/"${interface_name}.conf" > "$temp_file"
         mv "$temp_file" /etc/wireguard/"${interface_name}.conf"
         chmod 600 /etc/wireguard/"${interface_name}.conf"
 
-        # Append the new [Peer] entry with proper spacing
-        if [[ -s /etc/wireguard/"${interface_name}.conf" && $(tail -n 1 /etc/wireguard/"${interface_name}.conf") != "" ]]; then
+        # Append the new [Peer] entry with exactly one blank line before it
+        if [[ -s /etc/wireguard/"${interface_name}.conf" ]]; then
+            # Remove any trailing blank lines and ensure one blank line
+            sed -i -e :a -e '/^\n*$/{$d;N;};/\n$/ba' /etc/wireguard/"${interface_name}.conf"
             echo "" >> /etc/wireguard/"${interface_name}.conf"
         fi
         cat << EOF >> /etc/wireguard/"${interface_name}.conf"
