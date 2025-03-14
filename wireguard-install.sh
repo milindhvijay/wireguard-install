@@ -164,11 +164,6 @@ EOF
     chmod 600 /etc/wireguard/"${interface_name}.conf"
 }
 
-/etc/nftables.conf:5:1-1: Error: syntax error, unexpected '}'
-}
-^
-Error: Failed to apply nftables configuration. Restoring backup.
-
 configure_firewall() {
     local port="$1"
     local vpn_ipv4_subnet="$2"
