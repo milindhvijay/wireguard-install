@@ -466,6 +466,10 @@ configure_firewall() {
     local ipv4_enabled=$(yq e '.server.ipv4.enabled' config.yaml)
     local ipv6_enabled=$(yq e '.server.ipv6.enabled' config.yaml)
 
+    # New parameters for manual SNAT IP specification
+    local ipv4_snat_ip=$(yq e '.server.ipv4.snat_ip' config.yaml)
+    local ipv6_snat_ip=$(yq e '.server.ipv6.snat_ip' config.yaml)
+
     # Validate required variables
     if [[ -z "$host_interface" || "$host_interface" == "null" ]]; then
         echo "Error: host_interface is not set in config.yaml."
@@ -480,69 +484,136 @@ configure_firewall() {
         return 1
     fi
 
+    # Get server's static IPs
     server_ipv4_static=$(ip -4 addr show "$host_interface" | grep -oP 'inet \K[\d.]+' | head -n 1)
-    if [[ -z "$server_ipv4_static" && "$ipv4_nat" == "true" && "$ipv4_dynamic" != "true" ]]; then
-        echo "Error: Could not detect IPv4 address for $host_interface and ipv4.dynamic is not set to true."
-        return 1
-    fi
     server_ipv6_static=$(ip -6 addr show "$host_interface" scope global | grep -oP 'inet6 \K[0-9a-f:]+' | head -n 1)
-    if [[ -z "$server_ipv6_static" && "$ipv6_nat" == "true" && "$ipv6_dynamic" != "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
-        echo "Error: Could not detect IPv6 address for $host_interface and ipv6.dynamic is not set to true."
+
+    # Use manual SNAT IPs if provided, otherwise use server's static IPs
+    if [[ "$ipv4_snat_ip" == "null" || -z "$ipv4_snat_ip" ]]; then
+        ipv4_snat_ip="$server_ipv4_static"
+    fi
+
+    if [[ "$ipv6_snat_ip" == "null" || -z "$ipv6_snat_ip" ]]; then
+        ipv6_snat_ip="$server_ipv6_static"
+    fi
+
+    # Validate SNAT IPs when NAT is enabled but not dynamic
+    if [[ "$ipv4_nat" == "true" && "$ipv4_dynamic" != "true" && -z "$ipv4_snat_ip" ]]; then
+        echo "Error: No IPv4 SNAT IP available. Either specify server.ipv4.snat_ip, ensure host_interface has an IPv4, or set ipv4.dynamic to true."
         return 1
     fi
 
-    # Always start with a fresh file, backing up the old one
-    if [[ -f /etc/nftables.conf ]]; then
-        cp /etc/nftables.conf /etc/nftables.conf.backup-$(date +%F-%T)
+    if [[ "$ipv6_nat" == "true" && "$ipv6_dynamic" != "true" && -z "$ipv6_snat_ip" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
+        echo "Error: No IPv6 SNAT IP available. Either specify server.ipv6.snat_ip, ensure host_interface has an IPv6, or set ipv6.dynamic to true."
+        return 1
     fi
-    local temp_file=$(mktemp)
-    echo "#!/usr/sbin/nft -f" > "$temp_file"
 
     # Build NAT rules as an array
     local -a nat_rules=()
     if [[ "$ipv4_nat" == "true" && "$ipv4_enabled" == "true" ]]; then
         if [[ "$ipv4_dynamic" == "true" ]]; then
             nat_rules+=("ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" masquerade persistent")
-        elif [[ -n "$server_ipv4_static" ]]; then
-            nat_rules+=("ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" snat to $server_ipv4_static persistent")
+        elif [[ -n "$ipv4_snat_ip" ]]; then
+            nat_rules+=("ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" snat to $ipv4_snat_ip persistent")
         fi
     fi
+
     if [[ "$ipv6_nat" == "true" && "$ipv6_enabled" == "true" ]]; then
         if [[ "$ipv6_dynamic" == "true" ]]; then
             nat_rules+=("ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" masquerade persistent")
-        elif [[ -n "$server_ipv6_static" ]]; then
-            nat_rules+=("ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" snat to $server_ipv6_static persistent")
+        elif [[ -n "$ipv6_snat_ip" ]]; then
+            nat_rules+=("ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" snat to $ipv6_snat_ip persistent")
         fi
     fi
 
-    # Append the WireGuard table if there are rules
-    if [[ ${#nat_rules[@]} -gt 0 ]]; then
-        {
-            echo ""
-            echo "table inet wireguard {"
-            echo "    chain postrouting {"
-            echo "        type nat hook postrouting priority 100; policy accept;"
-            for rule in "${nat_rules[@]}"; do
-                echo "        $rule;"
-            done
-            echo "    }"
-            echo "}"
-        } >> "$temp_file"
+    # If there are no rules to add, we're done
+    if [[ ${#nat_rules[@]} -eq 0 ]]; then
+        echo "No firewall rules needed for WireGuard."
+        return 0
     fi
 
-    # Move the temporary file to /etc/nftables.conf
-    mv "$temp_file" /etc/nftables.conf
+    # Create the WireGuard table content
+    local wireguard_table=$(cat << EOF
+table inet wireguard {
+    chain postrouting {
+        type nat hook postrouting priority 100; policy accept;
+$(for rule in "${nat_rules[@]}"; do echo "        $rule;"; done)
+    }
+}
+EOF
+)
+
+    # Check if nftables.conf exists and has content
+    if [[ -f /etc/nftables.conf && -s /etc/nftables.conf ]]; then
+        # Backup the current file
+        cp /etc/nftables.conf /etc/nftables.conf.backup-$(date +%F-%T)
+
+        # Check if the wireguard table already exists
+        if grep -q "table inet wireguard" /etc/nftables.conf; then
+            # Replace the existing wireguard table
+            temp_file=$(mktemp)
+            awk -v new_table="$wireguard_table" '
+            BEGIN { skip = 0; brace_count = 0; printed = 0; }
+            /table inet wireguard {/ {
+                skip = 1;
+                brace_count = 1;
+                if (!printed) {
+                    print new_table;
+                    printed = 1;
+                }
+                next;
+            }
+            skip == 1 && /\{/ { brace_count++; }
+            skip == 1 && /\}/ {
+                brace_count--;
+                if (brace_count == 0) {
+                    skip = 0;
+                    next;
+                }
+            }
+            skip == 0 { print $0; }
+            END { if (!printed) print new_table; }
+            ' /etc/nftables.conf > "$temp_file"
+
+            mv "$temp_file" /etc/nftables.conf
+        else
+            # Append the wireguard table to the existing file
+            # First ensure the file has a proper shebang if needed
+            if ! grep -q "^#!/usr/sbin/nft -f" /etc/nftables.conf; then
+                temp_file=$(mktemp)
+                echo '#!/usr/sbin/nft -f' > "$temp_file"
+                cat /etc/nftables.conf >> "$temp_file"
+                mv "$temp_file" /etc/nftables.conf
+            fi
+
+            # Now append the wireguard table
+            echo "" >> /etc/nftables.conf
+            echo "$wireguard_table" >> /etc/nftables.conf
+        fi
+    else
+        # Create a new nftables.conf file
+        echo '#!/usr/sbin/nft -f' > /etc/nftables.conf
+        echo "" >> /etc/nftables.conf
+        echo "$wireguard_table" >> /etc/nftables.conf
+    fi
+
     chmod 600 /etc/nftables.conf
 
     # Apply the updated ruleset
     if ! nft -f /etc/nftables.conf; then
         echo "Error: Failed to apply nftables configuration. Restoring backup."
-        mv /etc/nftables.conf.backup-$(date +%F-%T) /etc/nftables.conf
-        nft -f /etc/nftables.conf
+        if [[ -f /etc/nftables.conf.backup-$(date +%F-%T) ]]; then
+            mv /etc/nftables.conf.backup-$(date +%F-%T) /etc/nftables.conf
+            nft -f /etc/nftables.conf
+        fi
         return 1
     fi
+
     systemctl enable nftables
     systemctl restart nftables
+
+    echo "Firewall rules for WireGuard have been configured."
+    return 0
 }
 
 clear_firewall_rules() {
@@ -840,23 +911,50 @@ else
             if [[ -f /etc/nftables.conf ]]; then
                 echo "Cleaning up WireGuard-specific nftables rules..."
                 cp /etc/nftables.conf /etc/nftables.conf.backup-$(date +%F-%T)
-                # Remove the wireguard table block and clean up any trailing newlines or braces
-                sed -i '/table inet wireguard {/,/}/d; /^\s*$/d; /^}/d' /etc/nftables.conf
 
-                if [[ ! -s /etc/nftables.conf || $(grep -v '^#!/usr/sbin/nft -f' /etc/nftables.conf | grep -v '^\s*$' | wc -l) -eq 0 ]]; then
-                    rm -f /etc/nftables.conf
-                    systemctl disable nftables
-                    systemctl stop nftables
-                    echo "Removed /etc/nftables.conf and disabled nftables service (no meaningful rules remain)."
-                else
-                    if ! nft -f /etc/nftables.conf; then
-                        echo "Error: Failed to apply updated nftables configuration. Restoring backup."
-                        mv /etc/nftables.conf.backup-$(date +%F-%T) /etc/nftables.conf
-                        nft -f /etc/nftables.conf
+                # Create a temporary file
+                temp_file=$(mktemp)
+
+                # Extract the wireguard table to identify it
+                if grep -q "table inet wireguard" /etc/nftables.conf; then
+                    # Process the file line by line, skipping the wireguard table section
+                    awk '
+                    BEGIN { skip = 0; brace_count = 0; }
+                    /table inet wireguard {/ { skip = 1; brace_count = 1; next; }
+                    skip == 1 && /\{/ { brace_count++; }
+                    skip == 1 && /\}/ {
+                        brace_count--;
+                        if (brace_count == 0) {
+                            skip = 0;
+                            next;
+                        }
+                    }
+                    skip == 0 { print $0; }
+                    ' /etc/nftables.conf > "$temp_file"
+
+                    # Clean up empty lines (more than one consecutive newline)
+                    awk 'NF {p=1} p' "$temp_file" > /etc/nftables.conf
+
+                    if [[ ! -s /etc/nftables.conf || $(grep -v '^#!/usr/sbin/nft -f' /etc/nftables.conf | grep -v '^\s*$' | wc -l) -eq 0 ]]; then
+                        rm -f /etc/nftables.conf
+                        systemctl disable nftables
+                        systemctl stop nftables
+                        echo "Removed /etc/nftables.conf and disabled nftables service (no meaningful rules remain)."
                     else
-                        echo "Updated /etc/nftables.conf to remove WireGuard rules."
+                        if ! nft -f /etc/nftables.conf; then
+                            echo "Error: Failed to apply updated nftables configuration. Restoring backup."
+                            mv /etc/nftables.conf.backup-$(date +%F-%T) /etc/nftables.conf
+                            nft -f /etc/nftables.conf
+                        else
+                            echo "Updated /etc/nftables.conf to remove WireGuard rules."
+                        fi
                     fi
+                else
+                    echo "No WireGuard table found in nftables configuration."
                 fi
+
+                # Clean up temp file
+                rm -f "$temp_file"
             fi
 
             if [[ -d "$(dirname "$0")/wireguard-configs" ]]; then
