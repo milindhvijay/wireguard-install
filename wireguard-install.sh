@@ -356,15 +356,14 @@ configure_firewall() {
         return 1
     fi
 
-    # Check if /etc/nftables.conf exists and contains other rules
+    # Always start with a fresh file, backing up the old one
     if [[ -f /etc/nftables.conf ]]; then
         cp /etc/nftables.conf /etc/nftables.conf.backup-$(date +%F-%T)
-        sed -i '/table inet wireguard {/,/}/d' /etc/nftables.conf
-    else
-        echo "#!/usr/sbin/nft -f" > /etc/nftables.conf
     fi
+    local temp_file=$(mktemp)
+    echo "#!/usr/sbin/nft -f" > "$temp_file"
 
-    # Build NAT rules as an array to avoid literal \n
+    # Build NAT rules as an array
     local -a nat_rules=()
     if [[ "$ipv4_nat" == "true" && "$ipv4_enabled" == "true" ]]; then
         if [[ "$ipv4_dynamic" == "true" ]]; then
@@ -381,7 +380,7 @@ configure_firewall() {
         fi
     fi
 
-    # Only append the table if there are NAT rules to add
+    # Append the WireGuard table if there are rules
     if [[ ${#nat_rules[@]} -gt 0 ]]; then
         {
             echo ""
@@ -393,11 +392,12 @@ configure_firewall() {
             done
             echo "    }"
             echo "}"
-        } >> /etc/nftables.conf
-    else
-        echo "No NAT rules required (ipv4.nat and ipv6.nat are false or conditions not met). Skipping firewall configuration."
-        return 0
+        } >> "$temp_file"
     fi
+
+    # Move the temporary file to /etc/nftables.conf
+    mv "$temp_file" /etc/nftables.conf
+    chmod 600 /etc/nftables.conf
 
     # Apply the updated ruleset
     if ! nft -f /etc/nftables.conf; then
