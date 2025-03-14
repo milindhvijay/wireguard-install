@@ -1,6 +1,6 @@
 # WireGuard Server and Client Configuration
 
-server:
+local_peer:
   interface_name: vpn0
   port: 51820
   host_interface: eth0
@@ -10,15 +10,15 @@ server:
   ipv6_dynamic: false
   ipv4:
     enabled: true
-    address: 10.0.1.2/24
-    nat: true
-    snat_ip: 59.95.64.1
+    gateway: 10.0.1.2/24
+    nat44: true
+    nat44_public_IP: 59.95.64.1
   ipv6:
     enabled: true
-    address: 2a01:4f8:1c1b:743c::12/80
-    nat: true
-    snat_ip: 2a01:4f4:1c1b:743c::1
-clients:
+    gateway: 2a01:4f8:1c1b:743c::12/80
+    nat66: true
+    nat66_public_IP: 2a01:4f4:1c1b:743c::1
+remote_peer:
   - name: phone14
     dns: 8.8.4.4
     mtu: 1420
