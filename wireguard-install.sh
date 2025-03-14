@@ -291,18 +291,18 @@ configure_firewall() {
     local ipv4_dynamic=$(yq e '.server.ipv4.dynamic' config.yaml)
     local ipv6_dynamic=$(yq e '.server.ipv6.dynamic' config.yaml)
 
-    if [[ "$ipv4_nat" == "true" || "$ipv6_nat" == "true" ]]; then
-        server_ipv4_static=$(ip -4 addr show "$host_interface" | grep -oP 'inet \K[\d.]+' | head -n 1)
-        if [[ -z "$server_ipv4_static" && "$ipv4_nat" == "true" && "$ipv4_dynamic" != "true" ]]; then
-            echo "Error: Could not detect IPv4 address for $host_interface and ipv4.dynamic is not set to true."
-            return 1
-        fi
-        server_ipv6_static=$(ip -6 addr show "$host_interface" scope global | grep -oP 'inet6 \K[0-9a-f:]+' | head -n 1)
-        if [[ -z "$server_ipv6_static" && "$ipv6_nat" == "true" && "$ipv6_dynamic" != "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
-            echo "Error: Could not detect IPv6 address for $host_interface and ipv6.dynamic is not set to true."
-            return 1
-        fi
+    server_ipv4_static=$(ip -4 addr show "$host_interface" | grep -oP 'inet \K[\d.]+' | head -n 1)
+    if [[ -z "$server_ipv4_static" && "$ipv4_nat" == "true" && "$ipv4_dynamic" != "true" ]]; then
+        echo "Error: Could not detect IPv4 address for $host_interface and ipv4.dynamic is not set to true."
+        return 1
+    fi
+    server_ipv6_static=$(ip -6 addr show "$host_interface" scope global | grep -oP 'inet6 \K[0-9a-f:]+' | head -n 1)
+    if [[ -z "$server_ipv6_static" && "$ipv6_nat" == "true" && "$ipv6_dynamic" != "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
+        echo "Error: Could not detect IPv6 address for $host_interface and ipv6.dynamic is not set to true."
+        return 1
+    fi
 
+    if [[ "$ipv4_nat" == "true" || "$ipv6_nat" == "true" ]]; then
         cat << EOF > /etc/nftables.conf
 #!/usr/sbin/nft -f
 
@@ -318,19 +318,18 @@ table inet wireguard {
     }
 }
 EOF
-
-        nft -f /etc/nftables.conf
-        systemctl enable nftables
-        systemctl restart nftables
     else
-        echo "Both ipv4.nat and ipv6.nat are false; no NAT rules will be configured."
+        echo "Both ipv4.nat and ipv6.nat are false; removing WireGuard NAT table."
         cat << EOF > /etc/nftables.conf
 #!/usr/sbin/nft -f
 
 flush ruleset
 EOF
-        nft -f /etc/nftables.conf
     fi
+
+    nft -f /etc/nftables.conf
+    systemctl enable nftables
+    systemctl restart nftables
 }
 
 clear_firewall_rules() {
