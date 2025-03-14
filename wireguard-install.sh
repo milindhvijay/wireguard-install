@@ -255,17 +255,27 @@ generate_client_configs() {
             echo "Removed old client configuration and keys for '$old_name'."
         fi
 
-        # Remove the old [Peer] entry and ensure consistent single-line spacing
+        # Remove the old [Peer] entry and ensure consistent spacing
         temp_file=$(mktemp)
         awk -v ip="$client_allowed_ips_ipv4" '
-        BEGIN { in_peer = 0; buffer = ""; need_blank = 0 }
-        /^\[Peer\]$/ {
-            if (in_peer && keep) {
+        BEGIN { in_interface = 0; in_peer = 0; buffer = ""; need_blank = 0 }
+        /^\[Interface\]$/ {
+            in_interface = 1; buffer = $0 "\n"; next
+        }
+        in_interface && /^\[Peer\]$/ {
+            in_interface = 0; in_peer = 1; keep = 1;
+            if (need_blank) { print "" }
+            print buffer; buffer = $0 "\n"; need_blank = 1; next
+        }
+        in_interface && !/^\[Peer\]$/ {
+            buffer = buffer $0 "\n"; next
+        }
+        in_peer && /^\[Peer\]$/ {
+            if (keep) {
                 if (need_blank) { print "" }
                 print buffer
-                need_blank = 1
             }
-            in_peer = 1; keep = 1; buffer = $0 "\n"; next
+            keep = 1; buffer = $0 "\n"; need_blank = 1; next
         }
         in_peer && /AllowedIPs =/ {
             if ($0 ~ ip) { keep = 0 }
@@ -275,13 +285,14 @@ generate_client_configs() {
             if (keep) {
                 if (need_blank) { print "" }
                 print buffer
-                need_blank = 1
             }
-            in_peer = 0; buffer = ""; next
+            in_peer = 0; buffer = ""; need_blank = 1; next
         }
         in_peer { buffer = buffer $0 "\n"; next }
-        { if (need_blank && $0 != "") { print "" } print; need_blank = ($0 != "") }
-        END { if (in_peer && keep) { if (need_blank) { print "" } print buffer } }
+        END {
+            if (in_interface) { print buffer }
+            else if (in_peer && keep) { if (need_blank) { print "" } print buffer }
+        }
         ' /etc/wireguard/"${interface_name}.conf" > "$temp_file"
         mv "$temp_file" /etc/wireguard/"${interface_name}.conf"
         chmod 600 /etc/wireguard/"${interface_name}.conf"
