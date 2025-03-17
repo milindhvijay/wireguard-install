@@ -703,16 +703,13 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     fi
 
     if [[ "$ipv6_enabled" == "true" ]]; then
-        case $server_ipv6_mask in
-            32|36|40|44|48|49|50|56|60|64)
-                vpn_ipv6_subnet=$(calculate_ipv6_subnet "$server_ipv6_ip" "$server_ipv6_mask")
-                echo "Debug: Calculated vpn_ipv6_subnet: $vpn_ipv6_subnet"
-                ;;
-            *)
-                echo "Unsupported prefix length: $server_ipv6_mask"
-                exit 1
-                ;;
-        esac
+        if [[ $server_ipv6_mask -lt 0 || $server_ipv6_mask -gt 128 ]]; then
+            echo "Error: Invalid prefix length. Must be between 0 and 128."
+            exit 1
+        fi
+
+        vpn_ipv6_subnet=$(calculate_ipv6_subnet "$server_ipv6_ip" "$server_ipv6_mask")
+        echo "Debug: Calculated vpn_ipv6_subnet: $vpn_ipv6_subnet"
     fi
 
     echo
@@ -793,16 +790,13 @@ else
             server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
             vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
             if [[ "$ipv6_enabled" == "true" ]]; then
-                case $server_ipv6_mask in
-                    32|36|40|44|48|50|56|60|64)
-                        vpn_ipv6_subnet=$(calculate_ipv6_subnet "$server_ipv6_ip" "$server_ipv6_mask")
-                        echo "Debug: Calculated vpn_ipv6_subnet (option 1): $vpn_ipv6_subnet"
-                        ;;
-                    *)
-                        echo "Unsupported prefix length: $server_ipv6_mask"
-                        exit 1
-                        ;;
-                esac
+                if [[ $server_ipv6_mask -lt 0 || $server_ipv6_mask -gt 128 ]]; then
+                    echo "Error: Invalid prefix length. Must be between 0 and 128."
+                    exit 1
+                fi
+
+                vpn_ipv6_subnet=$(calculate_ipv6_subnet "$server_ipv6_ip" "$server_ipv6_mask")
+                echo "Debug: Calculated vpn_ipv6_subnet: $vpn_ipv6_subnet"
             fi
 
             if [[ -f "$(dirname "$0")/config.yaml.backup" ]]; then
