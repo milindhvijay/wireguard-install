@@ -652,8 +652,13 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
         vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
     fi
     if [[ "$ipv6_enabled" == "true" ]]; then
-        ipv6_network=$(echo "$server_ipv6_ip" | sed -E 's/:[^:]*$/::/')
-        vpn_ipv6_subnet="${ipv6_network}/${server_ipv6_mask}"
+        segments_to_keep=$((server_ipv6_mask / 16))
+        if [[ $segments_to_keep -gt 0 ]]l; then
+            ipv6_prefix=(echo "$server_ipv6_ip" | cut -d':' -f1-$segments_to_keep)
+            vpn_ipv6_subnet="${ipv6_prefix}::/$server_ipv6_mask"
+        else
+            vpn_ipv6_subnet="::/$server_ipv6_mask"
+        fi
     fi
 
     echo
