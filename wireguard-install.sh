@@ -50,9 +50,9 @@ calculate_ipv6_subnet() {
 
     # If no remaining bits, just use the full segments
     if [[ $remaining_bits -eq 0 ]]; then
-        echo "${prefix_segments}::/${mask}"
+        echo "${prefix_segments}/$mask"
     else
-        echo "${prefix_segments}::/${mask}"
+        echo "${prefix_segments}::/$mask"
     fi
 }
 
