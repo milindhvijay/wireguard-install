@@ -24,7 +24,9 @@ compress_ipv6() {
     # Remove leading zeros in each hextet
     ip=$(echo "$ip" | sed -E 's/(^|:)0+([0-9a-f])/\1\2/g')
     # Replace the longest sequence of zero hextets with ::
-    echo "$ip" | sed -E 's/(^|:)(0(:|$)){2,}/::/'
+    ip=$(echo "$ip" | sed -E 's/(^|:)(0(:|$)){2,}/::/')
+    # Ensure there are no triple colons
+    echo "$ip" | sed 's/:::/::/'
 }
 
 calculate_ipv6_subnet() {
