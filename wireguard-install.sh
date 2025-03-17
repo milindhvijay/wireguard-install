@@ -375,7 +375,7 @@ generate_client_configs() {
         client_ipv6_ip=$(echo "$client_ipv6" | cut -d '/' -f 1)
         client_allowed_ips_combined="${client_ipv4_ip}/32$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", ${client_ipv6_ip}/128" )"
 
-        old_name=$(yq e ".remote_peer[$i].name" /etc/wireguard/config.yaml.backup)
+        old_name=$(yq e ".remote_peer[$i].name" "$(dirname "$0")/config.yaml.backup")
         if [[ "$old_name" != "$client_name" && -n "$old_name" ]]; then
             rm -f "$(dirname "$0")/wireguard-configs/${old_name}-${interface_name}.conf"
             rm -rf "$(dirname "$0")/keys/${old_name}-${interface_name}"
@@ -629,8 +629,8 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     fi
 
     mkdir -p /etc/wireguard
-    cp config.yaml /etc/wireguard/config.yaml.backup
-    chmod 600 /etc/wireguard/config.yaml.backup
+    cp config.yaml "$(dirname "$0")/config.yaml.backup"
+    chmod 600 "$(dirname "$0")/config.yaml.backup"
 
     if ! generate_full_configs; then
         echo "Error: Failed to generate configurations."
@@ -652,7 +652,8 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
         vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
     fi
     if [[ "$ipv6_enabled" == "true" ]]; then
-        vpn_ipv6_subnet="${server_ipv6_ip}/${server_ipv6_mask}"
+        ipv6_network=$(echo "$server_ipv6_ip" | sed -E 's/:[^:]*$/::/')
+        vpn_ipv6_subnet="${ipv6_network}/${server_ipv6_mask}"
     fi
 
     echo
@@ -732,15 +733,16 @@ else
             server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
             server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
             vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
-            vpn_ipv6_subnet="${server_ipv6_ip}/${server_ipv6_mask}"
+            ipv6_network=$(echo "$server_ipv6_ip" | sed -E 's/:[^:]*$/::/')
+            vpn_ipv6_subnet="${ipv6_network}/${server_ipv6_mask}"
 
-            if [[ -f /etc/wireguard/config.yaml.backup ]]; then
-                if cmp -s config.yaml /etc/wireguard/config.yaml.backup; then
+            if [[ -f "$(dirname "$0")/config.yaml.backup" ]]; then
+                if cmp -s config.yaml "$(dirname "$0")/config.yaml.backup"; then
                     echo "No changes detected in config.yaml. No action taken."
                     exit 0
                 fi
 
-                old_interface_name=$(yq e '.local_peer.interface_name' /etc/wireguard/config.yaml.backup)
+                old_interface_name=$(yq e '.local_peer.interface_name' "$(dirname "$0")/config.yaml.backup")
                 [[ "$old_interface_name" == "null" || -z "$old_interface_name" ]] && old_interface_name="wg0"
                 if [[ "$interface_name" != "$old_interface_name" ]]; then
                     echo "Interface name changed from '$old_interface_name' to '$interface_name'. Cleaning up old interface..."
@@ -754,7 +756,7 @@ else
                 fi
 
                 yq e '.local_peer' config.yaml > /tmp/server_new.yaml
-                yq e '.local_peer' /etc/wireguard/config.yaml.backup > /tmp/server_old.yaml
+                yq e '.local_peer' "$(dirname "$0")/config.yaml.backup" > /tmp/server_old.yaml
                 if ! cmp -s /tmp/server_new.yaml /tmp/server_old.yaml; then
                     echo "Server configuration changed. Regenerating all configurations..."
                     if ! generate_full_configs; then
@@ -762,8 +764,8 @@ else
                         rm -f /tmp/server_new.yaml /tmp/server_old.yaml
                         exit 1
                     fi
-                    cp config.yaml /etc/wireguard/config.yaml.backup
-                    chmod 600 /etc/wireguard/config.yaml.backup
+                    cp config.yaml "$(dirname "$0")/config.yaml.backup"
+                    chmod 600 "$(dirname "$0")/config.yaml.backup"
 
                     clear_firewall_rules
                     configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet"
@@ -786,13 +788,13 @@ else
                 else
                     changed_clients=()
                     number_of_clients=$(yq e '.remote_peer | length' config.yaml)
-                    old_clients=$(yq e '.remote_peer | length' /etc/wireguard/config.yaml.backup)
+                    old_clients=$(yq e '.remote_peer | length' "$(dirname "$0")/config.yaml.backup")
                     max_clients=$((number_of_clients > old_clients ? number_of_clients : old_clients))
 
                     for i in $(seq 0 $((max_clients - 1))); do
                         new_name=$(yq e ".remote_peer[$i].name" config.yaml)
-                        old_name=$(yq e ".remote_peer[$i].name" /etc/wireguard/config.yaml.backup)
-                        if [[ "$new_name" != "$old_name" ]] || ! cmp -s <(yq e ".remote_peer[$i]" config.yaml) <(yq e ".remote_peer[$i]" /etc/wireguard/config.yaml.backup); then
+                        old_name=$(yq e ".remote_peer[$i].name" "$(dirname "$0")/config.yaml.backup")
+                        if [[ "$new_name" != "$old_name" ]] || ! cmp -s <(yq e ".remote_peer[$i]" config.yaml) <(yq e ".remote_peer[$i]" "$(dirname "$0")/config.yaml.backup"); then
                             changed_clients+=("$i")
                         fi
                     done
@@ -804,8 +806,8 @@ else
                             rm -f /tmp/server_new.yaml /tmp/server_old.yaml
                             exit 1
                         fi
-                        cp config.yaml /etc/wireguard/config.yaml.backup
-                        chmod 600 /etc/wireguard/config.yaml.backup
+                        cp config.yaml "$(dirname "$0")/config.yaml.backup"
+                        chmod 600 "$(dirname "$0")/config.yaml.backup"
 
                         clear_firewall_rules
                         configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet"
@@ -839,8 +841,8 @@ else
                     echo "Error: Failed to regenerate configurations."
                     exit 1
                 fi
-                cp config.yaml /etc/wireguard/config.yaml.backup
-                chmod 600 /etc/wireguard/config.yaml.backup
+                cp config.yaml "$(dirname "$0")/config.yaml.backup"
+                chmod 600 "$(dirname "$0")/config.yaml.backup"
 
                 clear_firewall_rules
                 configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet"
