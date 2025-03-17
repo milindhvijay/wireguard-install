@@ -652,8 +652,18 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
         vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
     fi
     if [[ "$ipv6_enabled" == "true" ]]; then
-        ipv6_network=$(echo "$server_ipv6_ip" | cut -d':' -f1)
-        vpn_ipv6_subnet="${ipv6_network}::/$server_ipv6_mask"
+        # For IPv6, create a subnet based on the prefix length
+
+        # For /64 networks (most common case)
+        if [[ $server_ipv6_mask -eq 64 && "$server_ipv6_ip" == *:*:*:* ]]; then
+            # Try to extract the first 4 segments for /64 networks
+            ipv6_prefix=$(echo "$server_ipv6_ip" | sed -E 's/:[^:]*:[^:]*:[^:]*:[^:]*$//')
+            vpn_ipv6_subnet="${ipv6_prefix}::/$server_ipv6_mask"
+        else
+            # For other cases, just use the first segment
+            ipv6_prefix=$(echo "$server_ipv6_ip" | cut -d':' -f1)
+            vpn_ipv6_subnet="${ipv6_prefix}::/$server_ipv6_mask"
+        fi
     fi
 
     echo
