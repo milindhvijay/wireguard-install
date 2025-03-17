@@ -25,7 +25,7 @@ expand_ipv6() {
     if [[ "$ip" == *::* ]]; then
         local hextets=$(echo "$ip" | tr -cd ':' | wc -c)
         local missing=$((7 - hextets))
-        local zeros=$(printf '%0.s0:' $(seq 1 $missing))
+        local zeros=$(printf '%0.s0000:' $(seq 1 $missing))
         ip=$(echo "$ip" | sed "s/::/:${zeros}:/")
     fi
     # Ensure all hextets are 4 digits
