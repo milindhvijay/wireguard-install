@@ -19,42 +19,52 @@ else
     exit 1
 fi
 
-# Function to calculate IPv6 subnet by masking host bits
+expand_ipv6() {
+    local ip="$1"
+    # Replace :: with the appropriate number of zeros
+    if [[ "$ip" == *::* ]]; then
+        local hextets=$(echo "$ip" | tr -cd ':' | wc -c)
+        local missing=$((7 - hextets))
+        local zeros=$(printf '%0.s0:' $(seq 1 $missing))
+        ip=$(echo "$ip" | sed "s/::/:${zeros}:/")
+    fi
+    # Ensure all hextets are 4 digits
+    echo "$ip" | awk -F: '{for(i=1;i<=NF;i++) printf("%04x:", "0x"$i)}' | sed 's/:$//'
+}
+
 calculate_ipv6_subnet() {
     local ip="$1"
     local mask="$2"
+
+    # Expand the IPv6 address
+    ip=$(expand_ipv6 "$ip")
+
+    # Split the IPv6 address into 16-bit segments
+    IFS=':' read -r -a segments <<< "$ip"
+
+    # Calculate the number of full segments and remaining bits
     local full_segments=$((mask / 16))
     local remaining_bits=$((mask % 16))
+
+    # Build the prefix segments
     local prefix_segments=""
-    local boundary_segment=""
-    local mask_value=0
+    for ((i = 0; i < full_segments; i++)); do
+        prefix_segments="${prefix_segments}${segments[i]}:"
+    done
 
-    # Extract full segments before the boundary
-    if [[ $full_segments -gt 0 ]]; then
-        prefix_segments=$(echo "$ip" | cut -d':' -f1-$full_segments)
-    fi
-
-    # If there are remaining bits, mask the boundary segment
+    # Mask the boundary segment if there are remaining bits
     if [[ $remaining_bits -gt 0 ]]; then
-        boundary_segment=$(echo "$ip" | cut -d':' -f$((full_segments + 1)))
-        # Convert hex to decimal (default to 0 if empty)
-        boundary_decimal=$(printf '%d' "0x${boundary_segment:-0}")
-        # Calculate mask for remaining bits (e.g., for 2 bits: 0xC000)
-        mask_value=$((0xFFFF & (0xFFFF << (16 - remaining_bits))))
-        # Apply mask
-        masked_decimal=$((boundary_decimal & mask_value))
-        # Convert back to hex, ensure 4 digits
-        masked_hex=$(printf '%04x' "$masked_decimal")
-        prefix_segments="${prefix_segments:+$prefix_segments:}$masked_hex"
+        local boundary_segment="${segments[full_segments]}"
+        local boundary_decimal=$(printf '%d' "0x${boundary_segment}")
+        local mask_value=$((0xFFFF & (0xFFFF << (16 - remaining_bits))))
+        local masked_decimal=$((boundary_decimal & mask_value))
+        local masked_hex=$(printf '%04x' "$masked_decimal")
+        prefix_segments="${prefix_segments}${masked_hex}:"
     fi
 
-    # If no remaining bits, just use the full segments
-    if [[ $remaining_bits -eq 0 ]]; then
-        prefix_segments="${prefix_segments}"
-    fi
-
-    # Ensure the result is properly formatted
-    echo "${prefix_segments}::/${mask}" | sed 's/::\+/:/g' | sed 's/:$//'
+    # Remove the trailing colon and append the subnet notation
+    prefix_segments="${prefix_segments%:}"
+    echo "${prefix_segments}::/${mask}"
 }
 
 is_ipv4_in_use() {
