@@ -19,25 +19,12 @@ else
     exit 1
 fi
 
-expand_ipv6() {
-    local ip="$1"
-    # Replace :: with the appropriate number of zeros
-    if [[ "$ip" == *::* ]]; then
-        local hextets=$(echo "$ip" | tr -cd ':' | wc -c)
-        local missing=$((7 - hextets))
-        local zeros=$(printf '%0.s0000:' $(seq 1 $missing))
-        ip=$(echo "$ip" | sed "s/::/:${zeros}:/")
-    fi
-    # Ensure all hextets are 4 digits
-    echo "$ip" | awk -F: '{for(i=1;i<=NF;i++) printf("%04x:", "0x"$i)}' | sed 's/:$//'
-}
-
 calculate_ipv6_subnet() {
     local ip="$1"
     local mask="$2"
 
-    # Expand the IPv6 address
-    ip=$(expand_ipv6 "$ip")
+    # Convert the IPv6 address to its full expanded form
+    ip=$(sipcalc "$ip" | grep -oP 'Expanded Address\s*-\s*\K[0-9a-f:]+')
 
     # Split the IPv6 address into 16-bit segments
     IFS=':' read -r -a segments <<< "$ip"
