@@ -652,19 +652,44 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
         vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
     fi
     if [[ "$ipv6_enabled" == "true" ]]; then
-        if [[ $server_ipv6_mask -eq 64 ]]; then
-            ipv6_prefix=$(echo "$server_ipv6_ip" | cut -d':' -f1-4)
-            # Validate that we got four segments
-            if [[ $(echo "$ipv6_prefix" | grep -o ":" | wc -l) -eq 3 ]]; then
-                vpn_ipv6_subnet="${ipv6_prefix}::/${server_ipv6_mask}"
-            else
-                echo "Error: Invalid /64 IPv6 address: $server_ipv6_ip"
+        # Extract the number of segments based on the prefix length
+        case $server_ipv6_mask in
+            32)
+                # 2 full segments
+                ipv6_prefix=$(echo "$server_ipv6_ip" | cut -d':' -f1-2)
+                ;;
+            36|40|44)
+                # 2 full segments + partial 3rd segment (simplified as 2 segments for base)
+                ipv6_prefix=$(echo "$server_ipv6_ip" | cut -d':' -f1-2)
+                ;;
+            48)
+                # 3 full segments
+                ipv6_prefix=$(echo "$server_ipv6_ip" | cut -d':' -f1-3)
+                ;;
+            50|56|60)
+                # 3 full segments + partial 4th segment (simplified as 3 segments for base)
+                ipv6_prefix=$(echo "$server_ipv6_ip" | cut -d':' -f1-3)
+                ;;
+            64)
+                # 4 full segments
+                ipv6_prefix=$(echo "$server_ipv6_ip" | cut -d':' -f1-4)
+                ;;
+            *)
+                echo "Unsupported prefix length: $server_ipv6_mask"
                 exit 1
-            fi
-        else
-            echo "Unsupported prefix length: $server_ipv6_mask"
+                ;;
+        esac
+
+        # Validate the prefix has enough segments
+        segment_count=$(echo "$ipv6_prefix" | grep -o ":" | wc -l)
+        required_segments=$(( ($server_ipv6_mask - 1) / 16 ))
+        if [[ $segment_count -lt $required_segments ]]; then
+            echo "Error: Invalid IPv6 address for /$server_ipv6_mask: $server_ipv6_ip"
             exit 1
         fi
+
+        # Form the subnet by appending :: and the mask
+        vpn_ipv6_subnet="${ipv6_prefix}::/${server_ipv6_mask}"
     fi
 
     echo
