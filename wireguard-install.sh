@@ -170,7 +170,7 @@ generate_full_configs() {
     server_ipv6=$(yq e '.local_peer.ipv6.gateway' config.yaml)
     server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
     server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
-    vpn_ipv6_subnet="${server_ipv6_ip}/${server_ipv6_mask}"
+    # Remove initial vpn_ipv6_subnet assignment here
     base_ipv6=$(echo "$server_ipv6_ip" | sed 's/:[0-9a-f]*$//')
 
     cleanup_conflicting_interfaces "$server_ipv4_ip" "$server_ipv6_ip" "$interface_name"
@@ -315,13 +315,13 @@ generate_client_configs() {
     ipv4_enabled=$(yq e '.local_peer.ipv4.enabled' config.yaml)
     server_ipv4=$(yq e '.local_peer.ipv4.gateway' config.yaml)
     server_ipv4_ip=$(echo "$server_ipv4" | cut -d '/' -f 1)
-    server_ipv4_mask=$(echo "$server_ipv4" | cut -d '/' -f 2)
+    server_ipv4_mask=$(echo "$server_ipv4" | cut -d '/' -f 1)
     base_ipv4=$(echo "$server_ipv4_ip" | cut -d '.' -f 1-3)
     ipv6_enabled=$(yq e '.local_peer.ipv6.enabled' config.yaml)
     server_ipv6=$(yq e '.local_peer.ipv6.gateway' config.yaml)
     server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
     server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
-    vpn_ipv6_subnet="${server_ipv6_ip}/${server_ipv6_mask}"
+    # Remove initial vpn_ipv6_subnet assignment here
     base_ipv6=$(echo "$server_ipv6_ip" | sed 's/:[0-9a-f]*$//')
     server_public_key=$(wg show "$interface_name" public-key)
 
@@ -491,6 +491,8 @@ configure_firewall() {
 
     local ipv4_snat_ip=$(yq e '.local_peer.ipv4.nat44_public_IP' config.yaml)
     local ipv6_snat_ip=$(yq e '.local_peer.ipv6.nat66_public_IP' config.yaml)
+
+    echo "Debug: vpn_ipv6_subnet in configure_firewall: $vpn_ipv6_subnet"
 
     if [[ -z "$host_interface" || "$host_interface" == "null" ]]; then
         echo "Error: host_interface is not set in config.yaml."
@@ -676,7 +678,7 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     ipv6_enabled=$(yq e '.local_peer.ipv6.enabled' config.yaml)
     server_ipv4=$(yq e '.local_peer.ipv4.gateway' config.yaml)
     server_ipv4_ip=$(echo "$server_ipv4" | cut -d '/' -f 1)
-    server_ipv4_mask=$(echo "$server_ipv4" | cut -d '/' -f 2)
+    server_ipv6_mask=$(echo "$server_ipv4" | cut -d '/' -f 2)
     base_ipv4=$(echo "$server_ipv4_ip" | cut -d '.' -f 1-3)
     server_ipv6=$(yq e '.local_peer.ipv6.gateway' config.yaml)
     server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
@@ -691,6 +693,7 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
         case $server_ipv6_mask in
             32|36|40|44|48|50|56|60|64)
                 vpn_ipv6_subnet=$(calculate_ipv6_subnet "$server_ipv6_ip" "$server_ipv6_mask")
+                echo "Debug: Calculated vpn_ipv6_subnet: $vpn_ipv6_subnet"
                 ;;
             *)
                 echo "Unsupported prefix length: $server_ipv6_mask"
@@ -780,6 +783,7 @@ else
                 case $server_ipv6_mask in
                     32|36|40|44|48|50|56|60|64)
                         vpn_ipv6_subnet=$(calculate_ipv6_subnet "$server_ipv6_ip" "$server_ipv6_mask")
+                        echo "Debug: Calculated vpn_ipv6_subnet (option 1): $vpn_ipv6_subnet"
                         ;;
                     *)
                         echo "Unsupported prefix length: $server_ipv6_mask"
