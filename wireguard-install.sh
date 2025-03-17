@@ -19,6 +19,14 @@ else
     exit 1
 fi
 
+compress_ipv6() {
+    local ip="$1"
+    # Remove leading zeros in each hextet
+    ip=$(echo "$ip" | sed -E 's/(^|:)0+([0-9a-f])/\1\2/g')
+    # Replace the longest sequence of zero hextets with ::
+    echo "$ip" | sed -E 's/(^|:)(0(:|$)){2,}/::/'
+}
+
 calculate_ipv6_subnet() {
     local ip="$1"
     local mask="$2"
@@ -51,7 +59,10 @@ calculate_ipv6_subnet() {
 
     # Remove the trailing colon and append the subnet notation
     prefix_segments="${prefix_segments%:}"
-    echo "${prefix_segments}::/${mask}"
+    prefix_segments="${prefix_segments}::/${mask}"
+
+    # Compress the IPv6 address
+    compress_ipv6 "$prefix_segments"
 }
 
 is_ipv4_in_use() {
