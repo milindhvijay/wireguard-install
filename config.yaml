@@ -30,30 +30,19 @@ remote_peer:
     dns: 8.8.8.8, 8.8.4.4
     mtu: 1420
     allowed_ips: 0.0.0.0/0, ::/0
-    persistent_keepalive: 25
-    ipv4_address: 10.0.1.4/24
-    ipv6_address: 2a01:4f8:1c1b:743c::14/80
   - name: phone13
     dns: 8.8.4.4
     mtu: 1420
     allowed_ips: 0.0.0.0/0, ::/0
-    ipv4_address: 10.0.1.6/24
-    ipv6_address: 2a01:4f8:1c1b:743c::16/80
   - name: phone1344
     dns: 8.8.4.4
     mtu: 1420
     allowed_ips: 0.0.0.0/0, ::/0
-    ipv4_address: 10.0.1.5/24
-    ipv6_address: 2a01:4f8:1c1b:743c::2/80
   - name: phone13444
     dns: 8.8.4.4
     mtu: 1420
     allowed_ips: 0.0.0.0/0, ::/0
-    ipv4_address: 10.0.1.7/24
-    ipv6_address: 2a01:4f8:1c1b:743c::3/80
   - name: phone134443
     dns: 8.8.4.4
     mtu: 1420
     allowed_ips: 0.0.0.0/0, ::/0
-    ipv4_address: 10.0.1.8/24
-    ipv6_address: 2a01:4f8:1c1b:743c::4/80
