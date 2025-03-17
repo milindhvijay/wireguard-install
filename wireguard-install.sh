@@ -25,15 +25,13 @@ calculate_ipv6_subnet() {
     local mask="$2"
     local full_segments=$((mask / 16))
     local remaining_bits=$((mask % 16))
-    local prefix_segments
-    local boundary_segment
-    local mask_value
+    local prefix_segments=""
+    local boundary_segment=""
+    local mask_value=0
 
     # Extract full segments before the boundary
     if [[ $full_segments -gt 0 ]]; then
         prefix_segments=$(echo "$ip" | cut -d':' -f1-$full_segments)
-    else
-        prefix_segments=""
     fi
 
     # If there are remaining bits, mask the boundary segment
@@ -50,8 +48,12 @@ calculate_ipv6_subnet() {
         prefix_segments="${prefix_segments:+$prefix_segments:}$masked_hex"
     fi
 
-    # Form the subnet
-    echo "${prefix_segments}::/${mask}"
+    # If no remaining bits, just use the full segments
+    if [[ $remaining_bits -eq 0 ]]; then
+        echo "${prefix_segments}::/${mask}"
+    else
+        echo "${prefix_segments}::/${mask}"
+    fi
 }
 
 is_ipv4_in_use() {
