@@ -652,17 +652,18 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
         vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
     fi
     if [[ "$ipv6_enabled" == "true" ]]; then
-        # For IPv6, create a subnet based on the prefix length
-
-        # For /64 networks (most common case)
-        if [[ $server_ipv6_mask -eq 64 && "$server_ipv6_ip" == *:*:*:* ]]; then
-            # Try to extract the first 4 segments for /64 networks
-            ipv6_prefix=$(echo "$server_ipv6_ip" | sed -E 's/:[^:]*:[^:]*:[^:]*:[^:]*$//')
-            vpn_ipv6_subnet="${ipv6_prefix}::/$server_ipv6_mask"
+        if [[ $server_ipv6_mask -eq 64 ]]; then
+            ipv6_prefix=$(echo "$server_ipv6_ip" | cut -d':' -f1-4)
+            # Validate that we got four segments
+            if [[ $(echo "$ipv6_prefix" | grep -o ":" | wc -l) -eq 3 ]]; then
+                vpn_ipv6_subnet="${ipv6_prefix}::/${server_ipv6_mask}"
+            else
+                echo "Error: Invalid /64 IPv6 address: $server_ipv6_ip"
+                exit 1
+            fi
         else
-            # For other cases, just use the first segment
-            ipv6_prefix=$(echo "$server_ipv6_ip" | cut -d':' -f1)
-            vpn_ipv6_subnet="${ipv6_prefix}::/$server_ipv6_mask"
+            echo "Unsupported prefix length: $server_ipv6_mask"
+            exit 1
         fi
     fi
 
