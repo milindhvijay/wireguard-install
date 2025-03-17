@@ -50,10 +50,11 @@ calculate_ipv6_subnet() {
 
     # If no remaining bits, just use the full segments
     if [[ $remaining_bits -eq 0 ]]; then
-        echo "${prefix_segments}/$mask"
-    else
-        echo "${prefix_segments}::/$mask"
+        prefix_segments="${prefix_segments}::"
     fi
+
+    # Ensure the result is properly formatted and remove any trailing "::" if unnecessary
+    echo "${prefix_segments%:}/$mask"
 }
 
 is_ipv4_in_use() {
