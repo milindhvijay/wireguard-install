@@ -648,12 +648,12 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     echo "Installing WireGuard and nftables packages..."
     if [[ "$os" == "ubuntu" ]]; then
         apt-get update
-        apt-get install -y wireguard qrencode nftables
+        apt-get install -y wireguard qrencode nftables sipcalc
     elif [[ "$os" == "debian" ]]; then
         apt-get update
-        apt-get install -y wireguard qrencode nftables
+        apt-get install -y wireguard qrencode nftables sipcalc
     elif [[ "$os" == "centos" || "$os" == "fedora" ]]; then
-        dnf install -y wireguard-tools qrencode nftables
+        dnf install -y wireguard-tools qrencode nftables sipcalc
     else
         echo "Error: Unsupported OS."
         exit 1
