@@ -703,15 +703,16 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     fi
 
     if [[ "$ipv6_enabled" == "true" ]]; then
-        # Validate the prefix length
-        if [[ $server_ipv6_mask -lt 0 || $server_ipv6_mask -gt 128 ]]; then
-            echo "Error: Invalid prefix length. Must be between 0 and 128."
-            exit 1
-        fi
-
-        # Calculate the IPv6 subnet
-        vpn_ipv6_subnet=$(calculate_ipv6_subnet "$server_ipv6_ip" "$server_ipv6_mask")
-        echo "Debug: Calculated vpn_ipv6_subnet: $vpn_ipv6_subnet"
+        case $server_ipv6_mask in
+            32|36|40|44|48|49|50|56|60|64)
+                vpn_ipv6_subnet=$(calculate_ipv6_subnet "$server_ipv6_ip" "$server_ipv6_mask")
+                echo "Debug: Calculated vpn_ipv6_subnet: $vpn_ipv6_subnet"
+                ;;
+            *)
+                echo "Unsupported prefix length: $server_ipv6_mask"
+                exit 1
+                ;;
+        esac
     fi
 
     echo
