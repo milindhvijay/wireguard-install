@@ -652,26 +652,16 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
         vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
     fi
     if [[ "$ipv6_enabled" == "true" ]]; then
-        segments_to_keep=$((server_ipv6_mask / 16))
-        if [[ $segments_to_keep -gt 0 ]]; then
-            ipv6_prefix=$(echo "$server_ipv6_ip" | awk -F: '{
-                for(i=1; i<='"$segments_to_keep"'; i++) {
-                    if(i==1) prefix=$i;
-                    else prefix=prefix":"$i;
-                }
-                print prefix;
-            }')
+        # For IPv6, use a simpler approach to avoid syntax issues
+        # Just use the network prefix without the host part
 
-            if [[ "$ipv6_prefix" == *: ]]; then
-                vpn_ipv6_subnet="${ipv6_prefix}:/$server_ipv6_mask"
-            else
-                vpn_ipv6_subnet="${ipv6_prefix}::/$server_ipv6_mask"
-            fi
-        else
-            vpn_ipv6_subnet="::/$server_ipv6_mask"
-        fi
-        vpn_ipv6_subnet=$(echo "$vpn_ipv6_subnet" | sed 's/:::/::/')
+        # Get the base network prefix (first part of the IPv6 address)
+        ipv6_network=$(echo "$server_ipv6_ip" | cut -d':' -f1)
+
+        # Create the subnet with the appropriate prefix length
+        vpn_ipv6_subnet="${ipv6_network}::/$server_ipv6_mask"
     fi
+
 
     echo
     echo "WireGuard installation is ready to begin."
