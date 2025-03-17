@@ -19,6 +19,41 @@ else
     exit 1
 fi
 
+# Function to calculate IPv6 subnet by masking host bits
+calculate_ipv6_subnet() {
+    local ip="$1"
+    local mask="$2"
+    local full_segments=$((mask / 16))
+    local remaining_bits=$((mask % 16))
+    local prefix_segments
+    local boundary_segment
+    local mask_value
+
+    # Extract full segments before the boundary
+    if [[ $full_segments -gt 0 ]]; then
+        prefix_segments=$(echo "$ip" | cut -d':' -f1-$full_segments)
+    else
+        prefix_segments=""
+    fi
+
+    # If there are remaining bits, mask the boundary segment
+    if [[ $remaining_bits -gt 0 ]]; then
+        boundary_segment=$(echo "$ip" | cut -d':' -f$((full_segments + 1)))
+        # Convert hex to decimal (default to 0 if empty)
+        boundary_decimal=$(printf '%d' "0x${boundary_segment:-0}")
+        # Calculate mask for remaining bits (e.g., for 2 bits: 0xC000)
+        mask_value=$((0xFFFF & (0xFFFF << (16 - remaining_bits))))
+        # Apply mask
+        masked_decimal=$((boundary_decimal & mask_value))
+        # Convert back to hex, ensure 4 digits
+        masked_hex=$(printf '%04x' "$masked_decimal")
+        prefix_segments="${prefix_segments:+$prefix_segments:}$masked_hex"
+    fi
+
+    # Form the subnet
+    echo "${prefix_segments}::/${mask}"
+}
+
 is_ipv4_in_use() {
     local ip="$1"
     local used_ips=("${@:2}")
@@ -651,45 +686,17 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     if [[ "$ipv4_enabled" == "true" ]]; then
         vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
     fi
+
     if [[ "$ipv6_enabled" == "true" ]]; then
-        # Extract the number of segments based on the prefix length
         case $server_ipv6_mask in
-            32)
-                # 2 full segments
-                ipv6_prefix=$(echo "$server_ipv6_ip" | cut -d':' -f1-2)
-                ;;
-            36|40|44)
-                # 2 full segments + partial 3rd segment (simplified as 2 segments for base)
-                ipv6_prefix=$(echo "$server_ipv6_ip" | cut -d':' -f1-2)
-                ;;
-            48)
-                # 3 full segments
-                ipv6_prefix=$(echo "$server_ipv6_ip" | cut -d':' -f1-3)
-                ;;
-            50|56|60)
-                # 3 full segments + partial 4th segment (simplified as 3 segments for base)
-                ipv6_prefix=$(echo "$server_ipv6_ip" | cut -d':' -f1-3)
-                ;;
-            64)
-                # 4 full segments
-                ipv6_prefix=$(echo "$server_ipv6_ip" | cut -d':' -f1-4)
+            32|36|40|44|48|50|56|60|64)
+                vpn_ipv6_subnet=$(calculate_ipv6_subnet "$server_ipv6_ip" "$server_ipv6_mask")
                 ;;
             *)
                 echo "Unsupported prefix length: $server_ipv6_mask"
                 exit 1
                 ;;
         esac
-
-        # Validate the prefix has enough segments
-        segment_count=$(echo "$ipv6_prefix" | grep -o ":" | wc -l)
-        required_segments=$(( ($server_ipv6_mask - 1) / 16 ))
-        if [[ $segment_count -lt $required_segments ]]; then
-            echo "Error: Invalid IPv6 address for /$server_ipv6_mask: $server_ipv6_ip"
-            exit 1
-        fi
-
-        # Form the subnet by appending :: and the mask
-        vpn_ipv6_subnet="${ipv6_prefix}::/${server_ipv6_mask}"
     fi
 
     echo
@@ -769,8 +776,17 @@ else
             server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
             server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
             vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
-            ipv6_network=$(echo "$server_ipv6_ip" | sed -E 's/:[^:]*$/::/')
-            vpn_ipv6_subnet="${ipv6_network}/${server_ipv6_mask}"
+            if [[ "$ipv6_enabled" == "true" ]]; then
+                case $server_ipv6_mask in
+                    32|36|40|44|48|50|56|60|64)
+                        vpn_ipv6_subnet=$(calculate_ipv6_subnet "$server_ipv6_ip" "$server_ipv6_mask")
+                        ;;
+                    *)
+                        echo "Unsupported prefix length: $server_ipv6_mask"
+                        exit 1
+                        ;;
+                esac
+            fi
 
             if [[ -f "$(dirname "$0")/config.yaml.backup" ]]; then
                 if cmp -s config.yaml "$(dirname "$0")/config.yaml.backup"; then
