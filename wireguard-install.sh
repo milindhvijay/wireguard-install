@@ -299,6 +299,13 @@ EOF
 generate_client_configs() {
     local changed_clients=("$@")
 
+    for i in "${changed_clients[@]}"; do
+        client_name=$(yq e ".remote_peer[$i].name" config.yaml)
+        if [[ -z "$client_name" || "$client_name" == "null" ]]; then
+            echo "Skipping invalid client at index $i (no name)."
+            continue
+        fi
+
     if ! check_duplicate_client_names; then
         return 1
     fi
