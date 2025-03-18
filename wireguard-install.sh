@@ -34,7 +34,7 @@ calculate_ipv6_subnet() {
     local mask="$2"
 
     # Convert the IPv6 address to its full expanded form
-    ip=$(netcalc "$ip" | grep -oP 'Expanded Address\s*-\s*\K[0-9a-f:]+')
+    ip=$(sipcalc "$ip" | grep -oP 'Expanded Address\s*-\s*\K[0-9a-f:]+')
 
     # Split the IPv6 address into 16-bit segments
     IFS=':' read -r -a segments <<< "$ip"
