@@ -164,7 +164,6 @@ generate_full_configs() {
     server_ipv6=$(yq e '.local_peer.ipv6.gateway' config.yaml)
     server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
     server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
-    # Remove initial vpn_ipv6_subnet assignment here
     base_ipv6=$(echo "$server_ipv6_ip" | sed 's/:[0-9a-f]*$//')
 
     cleanup_conflicting_interfaces "$server_ipv4_ip" "$server_ipv6_ip" "$interface_name"
@@ -227,28 +226,25 @@ EOF
         client_allowed_ips=$(yq e ".remote_peer[$i].allowed_ips" config.yaml)
         client_persistent_keepalive=$(yq e ".remote_peer[$i].persistent_keepalive" config.yaml)
 
-        client_ipv4=$(yq e ".remote_peer[$i].ipv4_address" config.yaml)
-        if [[ "$ipv4_enabled" == "true" && ( "$client_ipv4" == "null" || -z "$client_ipv4" ) ]]; then
+        # Always assign new IPv4 based on current gateway
+        if [[ "$ipv4_enabled" == "true" ]]; then
             client_ipv4=$(find_next_ipv4 "$base_ipv4" "$server_ipv4_mask" "${used_ipv4s[@]}")
             if [[ $? -ne 0 ]]; then
                 echo "$client_ipv4"
                 return 1
             fi
             used_ipv4s+=("$(echo "$client_ipv4" | cut -d '/' -f 1)")
+            yq e -i ".remote_peer[$i].ipv4_address = \"$client_ipv4\"" config.yaml.tmp
         fi
 
-        client_ipv6=$(yq e ".remote_peer[$i].ipv6_address" config.yaml)
-        if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 && ( "$client_ipv6" == "null" || -z "$client_ipv6" ) ]]; then
+        # Always assign new IPv6 based on current gateway
+        if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
             client_ipv6=$(find_next_ipv6 "$base_ipv6" "$server_ipv6_mask" "${used_ipv6s[@]}")
             if [[ $? -ne 0 ]]; then
                 echo "$client_ipv6"
                 return 1
             fi
             used_ipv6s+=("$(echo "$client_ipv6" | cut -d '/' -f 1)")
-        fi
-
-        yq e -i ".remote_peer[$i].ipv4_address = \"$client_ipv4\"" config.yaml.tmp
-        if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
             yq e -i ".remote_peer[$i].ipv6_address = \"$client_ipv6\"" config.yaml.tmp
         fi
 
@@ -890,10 +886,21 @@ else
                     fi
                 done
 
-                yq e '.local_peer' config.yaml > /tmp/server_new.yaml
-                yq e '.local_peer' "$(dirname "$0")/config.yaml.backup" > /tmp/server_old.yaml
-                if ! cmp -s /tmp/server_new.yaml /tmp/server_old.yaml; then
-                    echo "Server configuration changed. Regenerating all configurations..."
+                # Check for gateway changes
+                old_server_ipv4=$(yq e '.local_peer.ipv4.gateway' "$(dirname "$0")/config.yaml.backup")
+                old_server_ipv6=$(yq e '.local_peer.ipv6.gateway' "$(dirname "$0")/config.yaml.backup")
+                gateway_changed=false
+                if [[ "$ipv4_enabled" == "true" && "$server_ipv4" != "$old_server_ipv4" ]]; then
+                    echo "IPv4 gateway changed from '$old_server_ipv4' to '$server_ipv4'."
+                    gateway_changed=true
+                fi
+                if [[ "$ipv6_enabled" == "true" && "$server_ipv6" != "$old_server_ipv6" ]]; then
+                    echo "IPv6 gateway changed from '$old_server_ipv6' to '$server_ipv6'."
+                    gateway_changed=true
+                fi
+
+                if [[ "$gateway_changed" == "true" ]]; then
+                    echo "Gateway changed. Regenerating all configurations with updated client IPs..."
                     if ! generate_full_configs; then
                         echo "Error: Failed to regenerate configurations."
                         rm -f /tmp/server_new.yaml /tmp/server_old.yaml
@@ -921,22 +928,12 @@ else
                         echo "No client configuration files found in $(dirname "$0")/wireguard-configs/."
                     fi
                 else
-                    changed_clients=()
-                    number_of_clients=$(yq e '.remote_peer | length' config.yaml)
-
-                    # Only check current clients, not removed ones
-                    for i in $(seq 0 $((number_of_clients - 1))); do
-                        new_name=$(yq e ".remote_peer[$i].name" config.yaml)
-                        old_name=$(yq e ".remote_peer[$i].name" "$(dirname "$0")/config.yaml.backup")
-                        if [[ "$new_name" != "$old_name" ]] || ! cmp -s <(yq e ".remote_peer[$i]" config.yaml) <(yq e ".remote_peer[$i]" "$(dirname "$0")/config.yaml.backup"); then
-                            changed_clients+=("$i")
-                        fi
-                    done
-
-                    if [[ ${#changed_clients[@]} -gt 0 ]]; then
-                        echo "Regenerating configurations for changed clients: ${changed_clients[*]}..."
-                        if ! generate_client_configs "${changed_clients[@]}"; then
-                            echo "Error: Failed to regenerate client configurations."
+                    yq e '.local_peer' config.yaml > /tmp/server_new.yaml
+                    yq e '.local_peer' "$(dirname "$0")/config.yaml.backup" > /tmp/server_old.yaml
+                    if ! cmp -s /tmp/server_new.yaml /tmp/server_old.yaml; then
+                        echo "Server configuration changed (but not gateway). Regenerating all configurations..."
+                        if ! generate_full_configs; then
+                            echo "Error: Failed to regenerate configurations."
                             rm -f /tmp/server_new.yaml /tmp/server_old.yaml
                             exit 1
                         fi
@@ -947,30 +944,71 @@ else
                         configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet"
 
                         echo "Updated client configurations:"
-                        mkdir -p "$(dirname "$0")/wireguard-configs/qr"
-                        for i in "${changed_clients[@]}"; do
-                            client_name=$(yq e ".remote_peer[$i].name" config.yaml)
-                            client_conf="$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
-                            qr_file="$(dirname "$0")/wireguard-configs/qr/${client_name}-${interface_name}.png"
-                            if [[ -f "$client_conf" ]]; then
-                                echo -e "\nClient: ${client_name}-${interface_name}"
+                        if ls "$(dirname "$0")/wireguard-configs"/*-"${interface_name}.conf" >/dev/null 2>&1; then
+                            mkdir -p "$(dirname "$0")/wireguard-configs/qr"
+                            for client_conf in "$(dirname "$0")/wireguard-configs"/*-"${interface_name}.conf"; do
+                                client_name=$(basename "$client_conf" .conf)
+                                qr_file="$(dirname "$0")/wireguard-configs/qr/${client_name}.png"
+                                echo -e "\nClient: $client_name"
                                 qrencode -t ANSI256UTF8 < "$client_conf"
                                 qrencode -o "$qr_file" < "$client_conf"
                                 echo "Configuration file saved at: $client_conf"
                                 echo "QR code image saved at: $qr_file"
-                            else
-                                echo "Warning: Configuration file for $client_name not found at $client_conf."
+                            done
+                        else
+                            echo "No client configuration files found in $(dirname "$0")/wireguard-configs/."
+                        fi
+                    else
+                        changed_clients=()
+                        number_of_clients=$(yq e '.remote_peer | length' config.yaml)
+
+                        for i in $(seq 0 $((number_of_clients - 1))); do
+                            new_name=$(yq e ".remote_peer[$i].name" config.yaml)
+                            old_name=$(yq e ".remote_peer[$i].name" "$(dirname "$0")/config.yaml.backup")
+                            if [[ "$new_name" != "$old_name" ]] || ! cmp -s <(yq e ".remote_peer[$i]" config.yaml) <(yq e ".remote_peer[$i]" "$(dirname "$0")/config.yaml.backup"); then
+                                changed_clients+=("$i")
                             fi
                         done
-                    else
-                        echo "No actionable changes detected in client configurations (after cleanup)."
-                        rm -f /tmp/server_new.yaml /tmp/server_old.yaml
-                        cp config.yaml "$(dirname "$0")/config.yaml.backup"
-                        chmod 600 "$(dirname "$0")/config.yaml.backup"
-                        exit 0
+
+                        if [[ ${#changed_clients[@]} -gt 0 ]]; then
+                            echo "Regenerating configurations for changed clients: ${changed_clients[*]}..."
+                            if ! generate_client_configs "${changed_clients[@]}"; then
+                                echo "Error: Failed to regenerate client configurations."
+                                rm -f /tmp/server_new.yaml /tmp/server_old.yaml
+                                exit 1
+                            fi
+                            cp config.yaml "$(dirname "$0")/config.yaml.backup"
+                            chmod 600 "$(dirname "$0")/config.yaml.backup"
+
+                            clear_firewall_rules
+                            configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet"
+
+                            echo "Updated client configurations:"
+                            mkdir -p "$(dirname "$0")/wireguard-configs/qr"
+                            for i in "${changed_clients[@]}"; do
+                                client_name=$(yq e ".remote_peer[$i].name" config.yaml)
+                                client_conf="$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
+                                qr_file="$(dirname "$0")/wireguard-configs/qr/${client_name}-${interface_name}.png"
+                                if [[ -f "$client_conf" ]]; then
+                                    echo -e "\nClient: ${client_name}-${interface_name}"
+                                    qrencode -t ANSI256UTF8 < "$client_conf"
+                                    qrencode -o "$qr_file" < "$client_conf"
+                                    echo "Configuration file saved at: $client_conf"
+                                    echo "QR code image saved at: $qr_file"
+                                else
+                                    echo "Warning: Configuration file for $client_name not found at $client_conf."
+                                fi
+                            done
+                        else
+                            echo "No actionable changes detected in client configurations (after cleanup)."
+                            rm -f /tmp/server_new.yaml /tmp/server_old.yaml
+                            cp config.yaml "$(dirname "$0")/config.yaml.backup"
+                            chmod 600 "$(dirname "$0")/config.yaml.backup"
+                            exit 0
+                        fi
                     fi
+                    rm -f /tmp/server_new.yaml /tmp/server_old.yaml
                 fi
-                rm -f /tmp/server_new.yaml /tmp/server_old.yaml
             else
                 echo "No backup found. Regenerating all configurations..."
                 if ! generate_full_configs; then
