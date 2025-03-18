@@ -761,8 +761,9 @@ else
     echo "WireGuard is already installed."
     echo "Select an option:"
     echo "   1) Re-create server and client configurations from YAML"
-    echo "   2) Remove WireGuard"
-    echo "   3) Exit"
+    echo "   2) Remove a Client"
+    echo "   3) Remove WireGuard"
+    echo "   4) Exit"
     read -p "Option: " option
 
     case $option in
@@ -1058,7 +1059,131 @@ else
                 exit 1
             fi
             ;;
+
         2)
+            if [[ ! -f config.yaml ]]; then
+                echo "Error: 'config.yaml' not found in the current directory."
+                exit 1
+            fi
+
+            interface_name=$(yq e '.local_peer.interface_name' config.yaml)
+            [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
+            number_of_clients=$(yq e '.remote_peer | length' config.yaml)
+
+            if [[ $number_of_clients -eq 0 ]]; then
+                echo "No clients defined in config.yaml."
+                exit 0
+            fi
+
+            echo "Current clients:"
+            for i in $(seq 0 $(($number_of_clients - 1))); do
+                client_name=$(yq e ".remote_peer[$i].name" config.yaml)
+                echo "   $i) $client_name"
+            done
+
+            read -p "Enter the number of the client to delete (or 'q' to quit): " choice
+            if [[ "$choice" == "q" || "$choice" == "Q" ]]; then
+                echo "Exiting without changes."
+                exit 0
+            fi
+
+            if ! [[ "$choice" =~ ^[0-9]+$ ]] || [[ $choice -lt 0 || $choice -ge $number_of_clients ]]; then
+                echo "Error: Invalid selection. Must be a number between 0 and $((number_of_clients - 1))."
+                exit 1
+            fi
+
+            client_name=$(yq e ".remote_peer[$choice].name" config.yaml)
+            echo "Deleting client: $client_name..."
+
+            # Remove from YAML
+            cp config.yaml config.yaml.tmp
+            yq e -i "del(.remote_peer[$choice])" config.yaml.tmp
+            mv config.yaml.tmp config.yaml
+            echo "Removed $client_name from config.yaml."
+
+            # Remove keys
+            key_dir="$(dirname "$0")/keys/${client_name}-${interface_name}"
+            if [[ -d "$key_dir" ]]; then
+                rm -rf "$key_dir"
+                echo "Removed key directory: $key_dir"
+            fi
+
+            # Remove client config
+            client_conf="$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
+            if [[ -f "$client_conf" ]]; then
+                rm -f "$client_conf"
+                echo "Removed client config: $client_conf"
+            fi
+
+            # Remove QR code
+            qr_file="$(dirname "$0")/wireguard-configs/qr/${client_name}-${interface_name}.png"
+            if [[ -f "$qr_file" ]]; then
+                rm -f "$qr_file"
+                echo "Removed QR code: $qr_file"
+            fi
+
+            # Remove from server .conf file
+            server_conf="/etc/wireguard/${interface_name}.conf"
+            if [[ -f "$server_conf" && -f "$key_dir/${client_name}-${interface_name}-public.key" ]]; then
+                client_public_key=$(cat "$key_dir/${client_name}-${interface_name}-public.key" 2>/dev/null || echo "")
+                if [[ -n "$client_public_key" ]]; then
+                    temp_file=$(mktemp)
+                    awk -v pubkey="$client_public_key" '
+                    BEGIN { in_peer = 0; buffer = ""; keep = 1 }
+                    /^\[Peer\]$/ {
+                        if (in_peer && keep) { print buffer }
+                        in_peer = 1; keep = 1; buffer = $0 "\n"; next
+                    }
+                    in_peer && /PublicKey =/ {
+                        if ($3 == pubkey) { keep = 0 }
+                        buffer = buffer $0 "\n"; next
+                    }
+                    in_peer && /^$/ {
+                        if (keep) { print buffer }
+                        in_peer = 0; buffer = ""; next
+                    }
+                    in_peer { buffer = buffer $0 "\n"; next }
+                    { print $0 }
+                    END { if (in_peer && keep) { print buffer } }
+                    ' "$server_conf" > "$temp_file"
+                    mv "$temp_file" "$server_conf"
+                    chmod 600 "$server_conf"
+                    echo "Removed $client_name from $server_conf."
+                else
+                    echo "Warning: Could not find public key for $client_name to remove from $server_conf."
+                fi
+            else
+                echo "Warning: $server_conf not found or keys already removed; skipping server config update."
+            fi
+
+            # Update backup
+            cp config.yaml "$(dirname "$0")/config.yaml.backup"
+            chmod 600 "$(dirname "$0")/config.yaml.backup"
+
+            # Restart WireGuard to apply changes
+            echo "Restarting WireGuard service to apply changes..."
+            if systemctl restart wg-quick@"$interface_name"; then
+                if ! wg show "$interface_name" >/dev/null 2>&1; then
+                    echo "Warning: $interface_name failed to restart properly, attempting manual restart..."
+                    wg-quick down "$interface_name" >/dev/null 2>&1
+                    wg-quick up "$interface_name"
+                    if wg show "$interface_name" >/dev/null 2>&1; then
+                        echo "WireGuard interface $interface_name is now active after manual restart."
+                    else
+                        echo "Error: Failed to restart $interface_name even after manual restart."
+                        exit 1
+                    fi
+                else
+                    echo "WireGuard service restarted successfully."
+                fi
+            else
+                echo "Error: Failed to restart $interface_name."
+                exit 1
+            fi
+
+            echo "Client $client_name deleted successfully."
+            ;;
+        3)
             interface_name=$(yq e '.local_peer.interface_name' config.yaml)
             [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
             systemctl disable --now wg-quick@"$interface_name"
@@ -1117,14 +1242,10 @@ else
             fi
 
             rm -rf /etc/wireguard
-            if [[ "$os" == "ubuntu" || "$os" == "debian" ]]; then
-                apt-get remove -y wireguard wireguard-tools
-            elif [[ "$os" == "centos" || "$os" == "fedora" ]]; then
-                dnf remove -y wireguard-tools
-            fi
+            apt-get remove -y wireguard wireguard-tools
             echo "WireGuard removed."
             ;;
-        3)
+        4)
             exit 0
             ;;
         *)
