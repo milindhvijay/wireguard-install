@@ -23,14 +23,17 @@ calculate_ipv6_subnet() {
     local ip="$1"
     local mask="$2"
 
+    # Combine IP and mask for netcalc
+    local cidr_ip="${ip}/${mask}"
+
     # Get the network address from netcalc
-    local network=$(netcalc -n "$ip" | grep -oP 'Network\s*:\s*\K[0-9a-f:]+/\d+')
+    local network=$(netcalc -n "$cidr_ip" | grep -oP 'Network\s*:\s*\K[0-9a-f:]+/\d+')
     if [[ -z "$network" ]]; then
-        echo "Error: Failed to calculate IPv6 subnet using netcalc for $ip." >&2
+        echo "Error: Failed to calculate IPv6 subnet using netcalc for $cidr_ip." >&2
         exit 1
     fi
 
-    # Extract the IP part without the mask (since mask is already $mask)
+    # Extract the IP part without the mask
     local network_ip=$(echo "$network" | cut -d '/' -f 1)
 
     # Compress the IPv6 address
