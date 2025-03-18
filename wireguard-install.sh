@@ -19,52 +19,30 @@ else
     exit 1
 fi
 
-compress_ipv6() {
-    local ip="$1"
-    # Remove leading zeros in each hextet
-    ip=$(echo "$ip" | sed -E 's/(^|:)0+([0-9a-f])/\1\2/g')
-    # Replace the longest sequence of zero hextets with ::
-    ip=$(echo "$ip" | sed -E 's/(^|:)(0(:|$)){2,}/::/')
-    # Ensure there are no triple colons
-    echo "$ip" | sed 's/:::/::/'
-}
-
 calculate_ipv6_subnet() {
     local ip="$1"
     local mask="$2"
 
-    # Convert the IPv6 address to its full expanded form
-    ip=$(netcalc -n "$ip" | grep -oP 'Expanded IPv6\s*:\s*\K[0-9a-f:]+')
-
-    # Split the IPv6 address into 16-bit segments
-    IFS=':' read -r -a segments <<< "$ip"
-
-    # Calculate the number of full segments and remaining bits
-    local full_segments=$((mask / 16))
-    local remaining_bits=$((mask % 16))
-
-    # Build the prefix segments
-    local prefix_segments=""
-    for ((i = 0; i < full_segments; i++)); do
-        prefix_segments="${prefix_segments}${segments[i]}:"
-    done
-
-    # Mask the boundary segment if there are remaining bits
-    if [[ $remaining_bits -gt 0 ]]; then
-        local boundary_segment="${segments[full_segments]}"
-        local boundary_decimal=$(printf '%d' "0x${boundary_segment}")
-        local mask_value=$((0xFFFF & (0xFFFF << (16 - remaining_bits))))
-        local masked_decimal=$((boundary_decimal & mask_value))
-        local masked_hex=$(printf '%04x' "$masked_decimal")
-        prefix_segments="${prefix_segments}${masked_hex}:"
+    # Get the network address from netcalc
+    local network=$(netcalc -n "$ip" | grep -oP 'Network\s*:\s*\K[0-9a-f:]+/\d+')
+    if [[ -z "$network" ]]; then
+        echo "Error: Failed to calculate IPv6 subnet using netcalc for $ip." >&2
+        exit 1
     fi
 
-    # Remove the trailing colon and append the subnet notation
-    prefix_segments="${prefix_segments%:}"
-    prefix_segments="${prefix_segments}::/${mask}"
+    # Extract the IP part without the mask (since mask is already $mask)
+    local network_ip=$(echo "$network" | cut -d '/' -f 1)
 
     # Compress the IPv6 address
-    compress_ipv6 "$prefix_segments"
+    # Remove leading zeros in each hextet
+    network_ip=$(echo "$network_ip" | sed -E 's/(^|:)0+([0-9a-f])/\1\2/g')
+    # Replace the longest sequence of zero hextets with ::
+    network_ip=$(echo "$network_ip" | sed -E 's/(^|:)(0(:|$)){2,}/::/')
+    # Ensure there are no triple colons
+    network_ip=$(echo "$network_ip" | sed 's/:::/::/')
+
+    # Append the original mask
+    echo "${network_ip}/${mask}"
 }
 
 is_ipv4_in_use() {
@@ -718,7 +696,11 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     port=$(yq e '.local_peer.port' config.yaml)
 
     if [[ "$ipv4_enabled" == "true" ]]; then
-        vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
+        vpn_ipv4_subnet=$(netcalc -n "$server_ipv4" | grep -oP 'Network\s*:\s*\K[\d.]+/\d+')
+        if [[ -z "$vpn_ipv4_subnet" ]]; then
+            echo "Error: Failed to calculate IPv4 subnet using netcalc for $server_ipv4."
+            exit 1
+        fi
     fi
 
     if [[ "$ipv6_enabled" == "true" ]]; then
@@ -807,7 +789,15 @@ else
             server_ipv6=$(yq e '.local_peer.ipv6.gateway' config.yaml)
             server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
             server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
-            vpn_ipv4_subnet="${base_ipv4}.0/$server_ipv4_mask"
+
+            if [[ "$ipv4_enabled" == "true" ]]; then
+                vpn_ipv4_subnet=$(netcalc -n "$server_ipv4" | grep -oP 'Network\s*:\s*\K[\d.]+/\d+')
+                if [[ -z "$vpn_ipv4_subnet" ]]; then
+                    echo "Error: Failed to calculate IPv4 subnet using netcalc for $server_ipv4."
+                    exit 1
+                fi
+            fi
+
             if [[ "$ipv6_enabled" == "true" ]]; then
                 if [[ $server_ipv6_mask -lt 0 || $server_ipv6_mask -gt 128 ]]; then
                     echo "Error: Invalid prefix length. Must be between 0 and 128."
