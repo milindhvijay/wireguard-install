@@ -1078,7 +1078,7 @@ else
             echo "Current clients:"
             for i in $(seq 0 $(($number_of_clients - 1))); do
                 client_name=$(yq e ".remote_peer[$i].name" config.yaml)
-                echo "   $((i + 1))) $client_name"  # Display starts at 1
+                echo "   $((i + 1))) $client_name"
             done
 
             read -p "Enter the number of the client to delete (1-$number_of_clients, or 'q' to quit): " choice
@@ -1092,10 +1092,49 @@ else
                 exit 1
             fi
 
-            # Convert user input (1-based) to 0-based index
             index=$((choice - 1))
             client_name=$(yq e ".remote_peer[$index].name" config.yaml)
             echo "Deleting client: $client_name..."
+
+            # Define paths
+            key_dir="$(dirname "$0")/keys/${client_name}-${interface_name}"
+            server_conf="/etc/wireguard/${interface_name}.conf"
+
+            # Get public key before any deletion
+            client_public_key=""
+            if [[ -f "$key_dir/${client_name}-${interface_name}-public.key" ]]; then
+                client_public_key=$(cat "$key_dir/${client_name}-${interface_name}-public.key")
+            fi
+
+            # Remove from server .conf file first (adapted from option 1)
+            if [[ -n "$client_public_key" && -f "$server_conf" ]]; then
+                temp_file=$(mktemp)
+                awk -v pubkey="$client_public_key" '
+                BEGIN { in_peer = 0; buffer = ""; keep = 1 }
+                /^\[Peer\]$/ {
+                    if (in_peer && keep) { print buffer }
+                    in_peer = 1; keep = 1; buffer = $0 "\n"; next
+                }
+                in_peer && /PublicKey =/ {
+                    if ($3 == pubkey) { keep = 0 }
+                    buffer = buffer $0 "\n"; next
+                }
+                in_peer && /^$/ {
+                    if (keep) { print buffer }
+                    in_peer = 0; buffer = ""; next
+                }
+                in_peer { buffer = buffer $0 "\n"; next }
+                { print $0 }
+                END { if (in_peer && keep) { print buffer } }
+                ' "$server_conf" > "$temp_file"
+                mv "$temp_file" "$server_conf"
+                chmod 600 "$server_conf"
+                echo "Removed $client_name from $server_conf"
+            elif [[ -z "$client_public_key" ]]; then
+                echo "Warning: Could not find public key for $client_name to remove from server config."
+            elif [[ ! -f "$server_conf" ]]; then
+                echo "Warning: $server_conf not found; skipping server config update."
+            fi
 
             # Remove from YAML
             cp config.yaml config.yaml.tmp
@@ -1103,59 +1142,22 @@ else
             mv config.yaml.tmp config.yaml
             echo "Removed $client_name from config.yaml."
 
-            # Remove keys
-            key_dir="$(dirname "$0")/keys/${client_name}-${interface_name}"
+            # Now perform cleanup
             if [[ -d "$key_dir" ]]; then
                 rm -rf "$key_dir"
                 echo "Removed key directory: $key_dir"
             fi
 
-            # Remove client config
             client_conf="$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
             if [[ -f "$client_conf" ]]; then
                 rm -f "$client_conf"
                 echo "Removed client config: $client_conf"
             fi
 
-            # Remove QR code
             qr_file="$(dirname "$0")/wireguard-configs/qr/${client_name}-${interface_name}.png"
             if [[ -f "$qr_file" ]]; then
                 rm -f "$qr_file"
                 echo "Removed QR code: $qr_file"
-            fi
-
-            # Remove from server .conf file
-            server_conf="/etc/wireguard/${interface_name}.conf"
-            if [[ -f "$server_conf" && -f "$key_dir/${client_name}-${interface_name}-public.key" ]]; then
-                client_public_key=$(cat "$key_dir/${client_name}-${interface_name}-public.key" 2>/dev/null || echo "")
-                if [[ -n "$client_public_key" ]]; then
-                    temp_file=$(mktemp)
-                    awk -v pubkey="$client_public_key" '
-                    BEGIN { in_peer = 0; buffer = ""; keep = 1 }
-                    /^\[Peer\]$/ {
-                        if (in_peer && keep) { print buffer }
-                        in_peer = 1; keep = 1; buffer = $0 "\n"; next
-                    }
-                    in_peer && /PublicKey =/ {
-                        if ($3 == pubkey) { keep = 0 }
-                        buffer = buffer $0 "\n"; next
-                    }
-                    in_peer && /^$/ {
-                        if (keep) { print buffer }
-                        in_peer = 0; buffer = ""; next
-                    }
-                    in_peer { buffer = buffer $0 "\n"; next }
-                    { print $0 }
-                    END { if (in_peer && keep) { print buffer } }
-                    ' "$server_conf" > "$temp_file"
-                    mv "$temp_file" "$server_conf"
-                    chmod 600 "$server_conf"
-                    echo "Removed $client_name from $server_conf."
-                else
-                    echo "Warning: Could not find public key for $client_name to remove from $server_conf."
-                fi
-            else
-                echo "Warning: $server_conf not found or keys already removed; skipping server config update."
             fi
 
             # Update backup
