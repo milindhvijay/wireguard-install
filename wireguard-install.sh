@@ -33,17 +33,18 @@ calculate_ipv6_subnet() {
     local ip="$1"
     local mask="$2"
 
-    # Use netcalc to get the network address in expanded form
-    # Note: netcalc syntax might differ; assuming it outputs something like "Network: <address>/<mask>"
-    ip=$(netcalc -6 "$ip/$mask" | grep -oP 'Network:\s*\K[0-9a-f:]+' | head -n 1)
+    # Use netcalc to get the network address
+    local network=$(netcalc -6 "$ip/$mask" | grep -oP 'Network:\s*\K[0-9a-f:]+' | head -n 1)
+    if [[ -z "$network" ]]; then
+        echo "Error: Failed to calculate network address with netcalc" >&2
+        return 1
+    fi
 
-    # If netcalc doesn't fully expand, we need to expand it manually
-    # This step assumes the input might be compressed, so we expand it
-    if [[ "$ip" =~ :: ]]; then
-        # Manual expansion of compressed IPv6 (if netcalc doesn't handle it)
+    # Ensure fully expanded form for segmentation
+    if [[ "$network" =~ :: ]]; then
         local full_ip=""
-        IFS=':' read -r -a parts <<< "$ip"
-        local zero_count=$((8 - ${#parts[@]} + $(echo "$ip" | grep -o '::' | wc -l)))
+        IFS=':' read -r -a parts <<< "$network"
+        local zero_count=$((8 - ${#parts[@]} + $(echo "$network" | grep -o '::' | wc -l)))
         for part in "${parts[@]}"; do
             if [[ -z "$part" && "$full_ip" != *"::"* ]]; then
                 for ((j=0; j<zero_count; j++)); do
@@ -53,26 +54,24 @@ calculate_ipv6_subnet() {
                 full_ip="${full_ip}$(printf '%04x' "0x${part}"):"
             fi
         done
-        ip="${full_ip%:}" # Remove trailing colon
+        network="${full_ip%:}"
     else
-        # Ensure each hextet is 4 digits
-        ip=$(echo "$ip" | sed -E 's/([^:]{1,3})(:|$)/0*\1\2/g' | sed -E 's/0*([0-9a-f]{4})/\1/g')
+        network=$(echo "$network" | sed -E 's/([^:]{1,3})(:|$)/0*\1\2/g' | sed -E 's/0*([0-9a-f]{4})/\1/g')
     fi
 
-    # Split the IPv6 address into 16-bit segments
-    IFS=':' read -r -a segments <<< "$ip"
+    # Split into segments
+    IFS=':' read -r -a segments <<< "$network"
 
-    # Calculate the number of full segments and remaining bits
+    # Calculate segments and bits
     local full_segments=$((mask / 16))
     local remaining_bits=$((mask % 16))
 
-    # Build the prefix segments
+    # Build prefix
     local prefix_segments=""
     for ((i = 0; i < full_segments; i++)); do
         prefix_segments="${prefix_segments}${segments[i]}:"
     done
 
-    # Mask the boundary segment if there are remaining bits
     if [[ $remaining_bits -gt 0 ]]; then
         local boundary_segment="${segments[full_segments]}"
         local boundary_decimal=$(printf '%d' "0x${boundary_segment}")
@@ -82,11 +81,9 @@ calculate_ipv6_subnet() {
         prefix_segments="${prefix_segments}${masked_hex}:"
     fi
 
-    # Remove the trailing colon and append the subnet notation
+    # Finalize and compress
     prefix_segments="${prefix_segments%:}"
     prefix_segments="${prefix_segments}::/${mask}"
-
-    # Compress the IPv6 address
     compress_ipv6 "$prefix_segments"
 }
 
