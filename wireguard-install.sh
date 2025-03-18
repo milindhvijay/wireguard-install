@@ -33,8 +33,31 @@ calculate_ipv6_subnet() {
     local ip="$1"
     local mask="$2"
 
-    # Convert the IPv6 address to its full expanded form
-    ip=$(netcalc "$ip" | grep -oP 'Expanded IPv6\s*:\s*\K[0-9a-f:]+')
+    # Use netcalc to get the network address in expanded form
+    # Note: netcalc syntax might differ; assuming it outputs something like "Network: <address>/<mask>"
+    ip=$(netcalc -6 "$ip/$mask" | grep -oP 'Network:\s*\K[0-9a-f:]+' | head -n 1)
+
+    # If netcalc doesn't fully expand, we need to expand it manually
+    # This step assumes the input might be compressed, so we expand it
+    if [[ "$ip" =~ :: ]]; then
+        # Manual expansion of compressed IPv6 (if netcalc doesn't handle it)
+        local full_ip=""
+        IFS=':' read -r -a parts <<< "$ip"
+        local zero_count=$((8 - ${#parts[@]} + $(echo "$ip" | grep -o '::' | wc -l)))
+        for part in "${parts[@]}"; do
+            if [[ -z "$part" && "$full_ip" != *"::"* ]]; then
+                for ((j=0; j<zero_count; j++)); do
+                    full_ip="${full_ip}0000:"
+                done
+            elif [[ -n "$part" ]]; then
+                full_ip="${full_ip}$(printf '%04x' "0x${part}"):"
+            fi
+        done
+        ip="${full_ip%:}" # Remove trailing colon
+    else
+        # Ensure each hextet is 4 digits
+        ip=$(echo "$ip" | sed -E 's/([^:]{1,3})(:|$)/0*\1\2/g' | sed -E 's/0*([0-9a-f]{4})/\1/g')
+    fi
 
     # Split the IPv6 address into 16-bit segments
     IFS=':' read -r -a segments <<< "$ip"
