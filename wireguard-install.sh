@@ -645,15 +645,22 @@ interface_name=$(yq e '.local_peer.interface_name' config.yaml 2>/dev/null || ec
 [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
 
 if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
-    echo "Installing WireGuard and nftables packages..."
-    if [[ "$os" == "ubuntu" ]]; then
+    echo "Installing WireGuard and other dependencies..."
+    if [[ "$os" == "ubuntu" || "$os" == "debian" ]]; then
+        if ! command -v netcalc &>/dev/null; then
+            echo "'netcalc' not found, adding repository..."
+            curl -sS https://deb.troglobit.com/pubkey.gpg | tee /etc/apt/trusted.gpg.d/troglobit.asc >/dev/null
+                    echo "deb [arch=amd64] https://deb.troglobit.com/debian stable main" | tee /etc/apt/sources.list.d/troglobit.list >/dev/null
+        fi
         apt-get update
-        apt-get install -y wireguard qrencode nftables sipcalc
-    elif [[ "$os" == "debian" ]]; then
-        apt-get update
-        apt-get install -y wireguard qrencode nftables sipcalc
-    elif [[ "$os" == "centos" || "$os" == "fedora" ]]; then
-        dnf install -y wireguard-tools qrencode nftables sipcalc
+        apt-get install -y wireguard qrencode nftables
+        if ! command -v netcalc &>/dev/null; then
+            apt-get install -y netcalc
+            if ! command -v netcalc &>/dev/null; then
+                echo "Error: Failed to install 'netcalc'. Please install it manually."
+                exit 1
+            fi
+        fi
     else
         echo "Error: Unsupported OS."
         exit 1
@@ -665,6 +672,18 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
         chmod +x /usr/bin/yq
         if ! command -v yq &>/dev/null; then
             echo "Error: Failed to install 'yq'. Please install it manually."
+            exit 1
+        fi
+    fi
+
+    if ! command -v netcalc &>/dev/null; then
+        echo "'netcalc' not found, installing it automatically..."
+        curl -sS https://deb.troglobit.com/pubkey.gpg | tee /etc/apt/trusted.gpg.d/troglobit.asc >/dev/null
+        echo "deb [arch=amd64] https://deb.troglobit.com/debian stable main" | tee /etc/apt/sources.list.d/troglobit.list >/dev/null
+        apt-get update
+        apt-get install -y netcalc
+        if ! command -v netcalc &>/dev/null; then
+            echo "Error: Failed to install 'netcalc'. Please install it manually."
             exit 1
         fi
     fi
