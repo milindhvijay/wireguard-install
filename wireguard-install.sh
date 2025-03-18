@@ -1078,26 +1078,28 @@ else
             echo "Current clients:"
             for i in $(seq 0 $(($number_of_clients - 1))); do
                 client_name=$(yq e ".remote_peer[$i].name" config.yaml)
-                echo "   $i) $client_name"
+                echo "   $((i + 1))) $client_name"  # Display starts at 1
             done
 
-            read -p "Enter the number of the client to delete (or 'q' to quit): " choice
+            read -p "Enter the number of the client to delete (1-$number_of_clients, or 'q' to quit): " choice
             if [[ "$choice" == "q" || "$choice" == "Q" ]]; then
                 echo "Exiting without changes."
                 exit 0
             fi
 
-            if ! [[ "$choice" =~ ^[0-9]+$ ]] || [[ $choice -lt 0 || $choice -ge $number_of_clients ]]; then
-                echo "Error: Invalid selection. Must be a number between 0 and $((number_of_clients - 1))."
+            if ! [[ "$choice" =~ ^[0-9]+$ ]] || [[ $choice -lt 1 || $choice -gt $number_of_clients ]]; then
+                echo "Error: Invalid selection. Must be a number between 1 and $number_of_clients."
                 exit 1
             fi
 
-            client_name=$(yq e ".remote_peer[$choice].name" config.yaml)
+            # Convert user input (1-based) to 0-based index
+            index=$((choice - 1))
+            client_name=$(yq e ".remote_peer[$index].name" config.yaml)
             echo "Deleting client: $client_name..."
 
             # Remove from YAML
             cp config.yaml config.yaml.tmp
-            yq e -i "del(.remote_peer[$choice])" config.yaml.tmp
+            yq e -i "del(.remote_peer[$index])" config.yaml.tmp
             mv config.yaml.tmp config.yaml
             echo "Removed $client_name from config.yaml."
 
