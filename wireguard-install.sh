@@ -840,14 +840,12 @@ else
                     old_name=$(yq e ".remote_peer[$i].name" "$(dirname "$0")/config.yaml.backup")
                     if [[ -n "$old_name" && -z "${current_names[$old_name]}" ]]; then
                         echo "Detected removed client: $old_name. Cleaning up..."
-                        # Get the public key before deleting anything
                         key_dir="$(dirname "$0")/keys/${old_name}-${interface_name}"
                         old_public_key=""
                         if [[ -f "$key_dir/${old_name}-${interface_name}-public.key" ]]; then
                             old_public_key=$(cat "$key_dir/${old_name}-${interface_name}-public.key")
                         fi
 
-                        # Remove client from server config if public key is available
                         if [[ -n "$old_public_key" && -f "/etc/wireguard/${interface_name}.conf" ]]; then
                             temp_file=$(mktemp)
                             awk -v pubkey="$old_public_key" '
@@ -875,19 +873,16 @@ else
                             echo "Warning: Could not find public key for $old_name to remove from server config."
                         fi
 
-                        # Now remove client config file
                         client_conf="$(dirname "$0")/wireguard-configs/${old_name}-${interface_name}.conf"
                         if [[ -f "$client_conf" ]]; then
                             rm -f "$client_conf"
                             echo "Removed client config: $client_conf"
                         fi
-                        # Remove client QR code
                         qr_file="$(dirname "$0")/wireguard-configs/qr/${old_name}-${interface_name}.png"
                         if [[ -f "$qr_file" ]]; then
                             rm -f "$qr_file"
                             echo "Removed QR code: $qr_file"
                         fi
-                        # Remove client keys last
                         if [[ -d "$key_dir" ]]; then
                             rm -rf "$key_dir"
                             echo "Removed key directory: $key_dir"
@@ -928,10 +923,9 @@ else
                 else
                     changed_clients=()
                     number_of_clients=$(yq e '.remote_peer | length' config.yaml)
-                    old_clients=$(yq e '.remote_peer | length' "$(dirname "$0")/config.yaml.backup")
-                    max_clients=$((number_of_clients > old_clients ? number_of_clients : old_clients))
 
-                    for i in $(seq 0 $((max_clients - 1))); do
+                    # Only check current clients, not removed ones
+                    for i in $(seq 0 $((number_of_clients - 1))); do
                         new_name=$(yq e ".remote_peer[$i].name" config.yaml)
                         old_name=$(yq e ".remote_peer[$i].name" "$(dirname "$0")/config.yaml.backup")
                         if [[ "$new_name" != "$old_name" ]] || ! cmp -s <(yq e ".remote_peer[$i]" config.yaml) <(yq e ".remote_peer[$i]" "$(dirname "$0")/config.yaml.backup"); then
