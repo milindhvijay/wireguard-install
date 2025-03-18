@@ -792,7 +792,6 @@ else
             server_ipv6=$(yq e '.local_peer.ipv6.gateway' config.yaml)
             server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
             server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
-
             if [[ "$ipv4_enabled" == "true" ]]; then
                 vpn_ipv4_subnet=$(netcalc -n "$server_ipv4" | grep -oP 'Network\s*:\s*\K[\d.]+/\d+')
                 if [[ -z "$vpn_ipv4_subnet" ]]; then
@@ -800,13 +799,11 @@ else
                     exit 1
                 fi
             fi
-
             if [[ "$ipv6_enabled" == "true" ]]; then
                 if [[ $server_ipv6_mask -lt 0 || $server_ipv6_mask -gt 128 ]]; then
                     echo "Error: Invalid prefix length. Must be between 0 and 128."
                     exit 1
                 fi
-
                 vpn_ipv6_subnet=$(calculate_ipv6_subnet "$server_ipv6_ip" "$server_ipv6_mask")
                 echo "Debug: Calculated vpn_ipv6_subnet: $vpn_ipv6_subnet"
             fi
@@ -829,6 +826,70 @@ else
                         echo "Removed old configuration file: /etc/wireguard/${old_interface_name}.conf"
                     fi
                 fi
+
+                # Detect removed clients
+                old_clients=$(yq e '.remote_peer | length' "$(dirname "$0")/config.yaml.backup")
+                new_clients=$(yq e '.remote_peer | length' config.yaml)
+                declare -A current_names
+                for i in $(seq 0 $((new_clients - 1))); do
+                    client_name=$(yq e ".remote_peer[$i].name" config.yaml)
+                    current_names["$client_name"]=1
+                done
+
+                for i in $(seq 0 $((old_clients - 1))); do
+                    old_name=$(yq e ".remote_peer[$i].name" "$(dirname "$0")/config.yaml.backup")
+                    if [[ -n "$old_name" && -z "${current_names[$old_name]}" ]]; then
+                        echo "Detected removed client: $old_name. Cleaning up..."
+                        # Remove client config file
+                        client_conf="$(dirname "$0")/wireguard-configs/${old_name}-${interface_name}.conf"
+                        if [[ -f "$client_conf" ]]; then
+                            rm -f "$client_conf"
+                            echo "Removed client config: $client_conf"
+                        fi
+                        # Remove client QR code
+                        qr_file="$(dirname "$0")/wireguard-configs/qr/${old_name}-${interface_name}.png"
+                        if [[ -f "$qr_file" ]]; then
+                            rm -f "$qr_file"
+                            echo "Removed QR code: $qr_file"
+                        fi
+                        # Remove client keys
+                        key_dir="$(dirname "$0")/keys/${old_name}-${interface_name}"
+                        if [[ -d "$key_dir" ]]; then
+                            rm -rf "$key_dir"
+                            echo "Removed key directory: $key_dir"
+                        fi
+                        # Remove client from server config
+                        if [[ -f "/etc/wireguard/${interface_name}.conf" ]]; then
+                            temp_file=$(mktemp)
+                            old_public_key=$(cat "$key_dir/${old_name}-${interface_name}-public.key" 2>/dev/null || echo "")
+                            if [[ -n "$old_public_key" ]]; then
+                                awk -v pubkey="$old_public_key" '
+                                BEGIN { in_peer = 0; buffer = ""; keep = 1 }
+                                /^\[Peer\]$/ {
+                                    if (in_peer && keep) { print buffer }
+                                    in_peer = 1; keep = 1; buffer = $0 "\n"; next
+                                }
+                                in_peer && /PublicKey =/ {
+                                    if ($3 == pubkey) { keep = 0 }
+                                    buffer = buffer $0 "\n"; next
+                                }
+                                in_peer && /^$/ {
+                                    if (keep) { print buffer }
+                                    in_peer = 0; buffer = ""; next
+                                }
+                                in_peer { buffer = buffer $0 "\n"; next }
+                                { print $0 }
+                                END { if (in_peer && keep) { print buffer } }
+                                ' "/etc/wireguard/${interface_name}.conf" > "$temp_file"
+                                mv "$temp_file" "/etc/wireguard/${interface_name}.conf"
+                                chmod 600 "/etc/wireguard/${interface_name}.conf"
+                                echo "Removed $old_name from /etc/wireguard/${interface_name}.conf"
+                            else
+                                echo "Warning: Could not find public key for $old_name to remove from server config."
+                            fi
+                        fi
+                    fi
+                done
 
                 yq e '.local_peer' config.yaml > /tmp/server_new.yaml
                 yq e '.local_peer' "$(dirname "$0")/config.yaml.backup" > /tmp/server_old.yaml
@@ -904,8 +965,10 @@ else
                             fi
                         done
                     else
-                        echo "No actionable changes detected in client configurations."
+                        echo "No actionable changes detected in client configurations (after cleanup)."
                         rm -f /tmp/server_new.yaml /tmp/server_old.yaml
+                        cp config.yaml "$(dirname "$0")/config.yaml.backup"
+                        chmod 600 "$(dirname "$0")/config.yaml.backup"
                         exit 0
                     fi
                 fi
