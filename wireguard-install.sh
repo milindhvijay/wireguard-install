@@ -301,7 +301,7 @@ generate_client_configs() {
 
     for i in "${changed_clients[@]}"; do
         client_name=$(yq e ".remote_peer[$i].name" config.yaml)
-        if [[ -z "$cleint_name" || "$client_name" == "null" ]]; then
+        if [[ -z "$client_name" || "$client_name" == "null" ]]; then
             echo "Skipping invalid client at index $i (no name)."
             continue
         fi
