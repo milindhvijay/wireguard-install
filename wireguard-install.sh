@@ -827,7 +827,7 @@ else
                     fi
                 fi
 
-                # Detect removed clients
+                # Detect and clean up removed clients
                 old_clients=$(yq e '.remote_peer | length' "$(dirname "$0")/config.yaml.backup")
                 new_clients=$(yq e '.remote_peer | length' config.yaml)
                 declare -A current_names
@@ -840,7 +840,42 @@ else
                     old_name=$(yq e ".remote_peer[$i].name" "$(dirname "$0")/config.yaml.backup")
                     if [[ -n "$old_name" && -z "${current_names[$old_name]}" ]]; then
                         echo "Detected removed client: $old_name. Cleaning up..."
-                        # Remove client config file
+                        # Get the public key before deleting anything
+                        key_dir="$(dirname "$0")/keys/${old_name}-${interface_name}"
+                        old_public_key=""
+                        if [[ -f "$key_dir/${old_name}-${interface_name}-public.key" ]]; then
+                            old_public_key=$(cat "$key_dir/${old_name}-${interface_name}-public.key")
+                        fi
+
+                        # Remove client from server config if public key is available
+                        if [[ -n "$old_public_key" && -f "/etc/wireguard/${interface_name}.conf" ]]; then
+                            temp_file=$(mktemp)
+                            awk -v pubkey="$old_public_key" '
+                            BEGIN { in_peer = 0; buffer = ""; keep = 1 }
+                            /^\[Peer\]$/ {
+                                if (in_peer && keep) { print buffer }
+                                in_peer = 1; keep = 1; buffer = $0 "\n"; next
+                            }
+                            in_peer && /PublicKey =/ {
+                                if ($3 == pubkey) { keep = 0 }
+                                buffer = buffer $0 "\n"; next
+                            }
+                            in_peer && /^$/ {
+                                if (keep) { print buffer }
+                                in_peer = 0; buffer = ""; next
+                            }
+                            in_peer { buffer = buffer $0 "\n"; next }
+                            { print $0 }
+                            END { if (in_peer && keep) { print buffer } }
+                            ' "/etc/wireguard/${interface_name}.conf" > "$temp_file"
+                            mv "$temp_file" "/etc/wireguard/${interface_name}.conf"
+                            chmod 600 "/etc/wireguard/${interface_name}.conf"
+                            echo "Removed $old_name from /etc/wireguard/${interface_name}.conf"
+                        elif [[ -z "$old_public_key" ]]; then
+                            echo "Warning: Could not find public key for $old_name to remove from server config."
+                        fi
+
+                        # Now remove client config file
                         client_conf="$(dirname "$0")/wireguard-configs/${old_name}-${interface_name}.conf"
                         if [[ -f "$client_conf" ]]; then
                             rm -f "$client_conf"
@@ -852,41 +887,10 @@ else
                             rm -f "$qr_file"
                             echo "Removed QR code: $qr_file"
                         fi
-                        # Remove client keys
-                        key_dir="$(dirname "$0")/keys/${old_name}-${interface_name}"
+                        # Remove client keys last
                         if [[ -d "$key_dir" ]]; then
                             rm -rf "$key_dir"
                             echo "Removed key directory: $key_dir"
-                        fi
-                        # Remove client from server config
-                        if [[ -f "/etc/wireguard/${interface_name}.conf" ]]; then
-                            temp_file=$(mktemp)
-                            old_public_key=$(cat "$key_dir/${old_name}-${interface_name}-public.key" 2>/dev/null || echo "")
-                            if [[ -n "$old_public_key" ]]; then
-                                awk -v pubkey="$old_public_key" '
-                                BEGIN { in_peer = 0; buffer = ""; keep = 1 }
-                                /^\[Peer\]$/ {
-                                    if (in_peer && keep) { print buffer }
-                                    in_peer = 1; keep = 1; buffer = $0 "\n"; next
-                                }
-                                in_peer && /PublicKey =/ {
-                                    if ($3 == pubkey) { keep = 0 }
-                                    buffer = buffer $0 "\n"; next
-                                }
-                                in_peer && /^$/ {
-                                    if (keep) { print buffer }
-                                    in_peer = 0; buffer = ""; next
-                                }
-                                in_peer { buffer = buffer $0 "\n"; next }
-                                { print $0 }
-                                END { if (in_peer && keep) { print buffer } }
-                                ' "/etc/wireguard/${interface_name}.conf" > "$temp_file"
-                                mv "$temp_file" "/etc/wireguard/${interface_name}.conf"
-                                chmod 600 "/etc/wireguard/${interface_name}.conf"
-                                echo "Removed $old_name from /etc/wireguard/${interface_name}.conf"
-                            else
-                                echo "Warning: Could not find public key for $old_name to remove from server config."
-                            fi
                         fi
                     fi
                 done
