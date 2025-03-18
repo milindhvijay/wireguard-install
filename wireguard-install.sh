@@ -309,7 +309,7 @@ generate_client_configs() {
     ipv4_enabled=$(yq e '.local_peer.ipv4.enabled' config.yaml)
     server_ipv4=$(yq e '.local_peer.ipv4.gateway' config.yaml)
     server_ipv4_ip=$(echo "$server_ipv4" | cut -d '/' -f 1)
-    server_ipv4_mask=$(echo "$server_ipv4" | cut -d '/' -f 1)
+    server_ipv4_mask=$(echo "$server_ipv4" | cut -d '/' -f 2)
     base_ipv4=$(echo "$server_ipv4_ip" | cut -d '.' -f 1-3)
     ipv6_enabled=$(yq e '.local_peer.ipv6.enabled' config.yaml)
     server_ipv6=$(yq e '.local_peer.ipv6.gateway' config.yaml)
