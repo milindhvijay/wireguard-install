@@ -467,7 +467,7 @@ EOF
     mv config.yaml.tmp config.yaml
 }
 
-configure_firewall() {
+onfigure_firewall() {
     local port="$1"
     local vpn_ipv4_subnet="$2"
     local vpn_ipv6_subnet="$3"
@@ -550,72 +550,63 @@ $(for rule in "${nat_rules[@]}"; do echo "        $rule;"; done)
 EOF
 )
 
-    if [[ -f /etc/nftables.conf && -s /etc/nftables.conf ]]; then
-        cp /etc/nftables.conf /etc/nftables.conf.backup-$(date +%F-%T)
+    # Ensure /etc/nftables directory exists
+    mkdir -p /etc/nftables
 
-        if grep -q "table inet wireguard" /etc/nftables.conf; then
-            temp_file=$(mktemp)
-            awk -v new_table="$wireguard_table" '
-            BEGIN { skip = 0; brace_count = 0; printed = 0; }
-            /table inet wireguard {/ {
-                skip = 1;
-                brace_count = 1;
-                if (!printed) {
-                    print new_table;
-                    printed = 1;
-                }
-                next;
-            }
-            skip == 1 && /\{/ { brace_count++; }
-            skip == 1 && /\}/ {
-                brace_count--;
-                if (brace_count == 0) {
-                    skip = 0;
-                    next;
-                }
-            }
-            skip == 0 { print $0; }
-            END { if (!printed) print new_table; }
-            ' /etc/nftables.conf > "$temp_file"
+    # Define the target file
+    local nft_file="/etc/nftables/wg.nft"
 
-            mv "$temp_file" /etc/nftables.conf
-        else
-            if ! grep -q "^#!/usr/sbin/nft -f" /etc/nftables.conf; then
-                temp_file=$(mktemp)
-                echo '#!/usr/sbin/nft -f' > "$temp_file"
-                cat /etc/nftables.conf >> "$temp_file"
-                mv "$temp_file" /etc/nftables.conf
-            fi
-
-            echo "" >> /etc/nftables.conf
-            echo "$wireguard_table" >> /etc/nftables.conf
-        fi
-    else
-        echo '#!/usr/sbin/nft -f' > /etc/nftables.conf
-        echo "" >> /etc/nftables.conf
-        echo "$wireguard_table" >> /etc/nftables.conf
+    # If wg.nft exists, back it up
+    if [[ -f "$nft_file" && -s "$nft_file" ]]; then
+        cp "$nft_file" "${nft_file}.backup-$(date +%F-%T)"
     fi
 
-    chmod 600 /etc/nftables.conf
+    # Write the new configuration to wg.nft
+    echo '#!/usr/sbin/nft -f' > "$nft_file"
+    echo "" >> "$nft_file"
+    echo "$wireguard_table" >> "$nft_file"
+    chmod 600 "$nft_file"
 
+    # Apply the nftables configuration via /etc/nftables.conf, which includes *.nft
     if ! nft -f /etc/nftables.conf; then
-        echo "Error: Failed to apply nftables configuration. Restoring backup."
-        if [[ -f /etc/nftables.conf.backup-$(date +%F-%T) ]]; then
-            mv /etc/nftables.conf.backup-$(date +%F-%T) /etc/nftables.conf
+        echo "Error: Failed to apply nftables configuration from /etc/nftables.conf. Restoring wg.nft backup if available."
+        if [[ -f "${nft_file}.backup-$(date +%F-%T)" ]]; then
+            mv "${nft_file}.backup-$(date +%F-%T)" "$nft_file"
             nft -f /etc/nftables.conf
         fi
         return 1
     fi
 
+    # Enable and restart nftables service
     systemctl enable nftables
     systemctl restart nftables
 
-    echo "Firewall rules for WireGuard have been configured."
+    echo "Firewall rules for WireGuard have been configured in $nft_file."
     return 0
 }
 
 clear_firewall_rules() {
+    local nft_file="/etc/nftables/wg.nft"
+
+    # Remove the wireguard table from the running configuration
     nft delete table inet wireguard 2>/dev/null || echo "No WireGuard table found in running config, skipping."
+
+    # Remove the wg.nft file
+    if [[ -f "$nft_file" ]]; then
+        rm -f "$nft_file"
+        echo "Removed WireGuard nftables configuration file: $nft_file"
+
+        # Reload /etc/nftables.conf to apply the change (removing wg.nft from inclusion)
+        if [[ -f /etc/nftables.conf ]]; then
+            if ! nft -f /etc/nftables.conf; then
+                echo "Error: Failed to reload nftables configuration after removing $nft_file."
+                return 1
+            fi
+            echo "Reloaded /etc/nftables.conf to reflect removal of $nft_file."
+        fi
+    else
+        echo "No $nft_file file found, skipping file removal."
+    fi
 }
 
 interface_name=$(yq e '.local_peer.interface_name' config.yaml 2>/dev/null || echo "wg0")
@@ -1187,54 +1178,14 @@ else
 
             echo "Client $client_name deleted successfully."
             ;;
+
         3)
             interface_name=$(yq e '.local_peer.interface_name' config.yaml)
             [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
             systemctl disable --now wg-quick@"$interface_name"
 
-            if [[ -f /etc/nftables.conf ]]; then
-                echo "Cleaning up WireGuard-specific nftables rules..."
-                cp /etc/nftables.conf /etc/nftables.conf.backup-$(date +%F-%T)
-
-                temp_file=$(mktemp)
-
-                if grep -q "table inet wireguard" /etc/nftables.conf; then
-                    awk '
-                    BEGIN { skip = 0; brace_count = 0; }
-                    /table inet wireguard {/ { skip = 1; brace_count = 1; next; }
-                    skip == 1 && /\{/ { brace_count++; }
-                    skip == 1 && /\}/ {
-                        brace_count--;
-                        if (brace_count == 0) {
-                            skip = 0;
-                            next;
-                        }
-                    }
-                    skip == 0 { print $0; }
-                    ' /etc/nftables.conf > "$temp_file"
-
-                    awk 'NF {p=1} p' "$temp_file" > /etc/nftables.conf
-
-                    if [[ ! -s /etc/nftables.conf || $(grep -v '^#!/usr/sbin/nft -f' /etc/nftables.conf | grep -v '^\s*$' | wc -l) -eq 0 ]]; then
-                        rm -f /etc/nftables.conf
-                        systemctl disable nftables
-                        systemctl stop nftables
-                        echo "Removed /etc/nftables.conf and disabled nftables service (no meaningful rules remain)."
-                    else
-                        if ! nft -f /etc/nftables.conf; then
-                            echo "Error: Failed to apply updated nftables configuration. Restoring backup."
-                            mv /etc/nftables.conf.backup-$(date +%F-%T) /etc/nftables.conf
-                            nft -f /etc/nftables.conf
-                        else
-                            echo "Updated /etc/nftables.conf to remove WireGuard rules."
-                        fi
-                    fi
-                else
-                    echo "No WireGuard table found in nftables configuration."
-                fi
-
-                rm -f "$temp_file"
-            fi
+            # Clear firewall rules using the updated function
+            clear_firewall_rules
 
             if [[ -d "$(dirname "$0")/wireguard-configs" ]]; then
                 rm -rf "$(dirname "$0")/wireguard-configs"
@@ -1249,6 +1200,7 @@ else
             apt-get remove -y wireguard wireguard-tools
             echo "WireGuard removed."
             ;;
+
         4)
             exit 0
             ;;
