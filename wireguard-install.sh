@@ -467,7 +467,7 @@ EOF
     mv config.yaml.tmp config.yaml
 }
 
-onfigure_firewall() {
+configure_firewall() {
     local port="$1"
     local vpn_ipv4_subnet="$2"
     local vpn_ipv6_subnet="$3"
