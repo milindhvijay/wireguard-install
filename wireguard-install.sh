@@ -19,7 +19,7 @@ else
     exit 1
 fi
 
-calculate_ipv6_subnet() {
+calculate_inet6_subnet() {
     local ip="$1"
     local mask="$2"
 
@@ -29,14 +29,14 @@ calculate_ipv6_subnet() {
     # Get the network address from netcalc
     local network=$(netcalc -n "$cidr_ip" | grep -oP 'Network\s*:\s*\K[0-9a-f:]+/\d+')
     if [[ -z "$network" ]]; then
-        echo "Error: Failed to calculate IPv6 subnet using netcalc for $cidr_ip." >&2
+        echo "Error: Failed to calculate inet6 subnet using netcalc for $cidr_ip." >&2
         exit 1
     fi
 
     # Extract the IP part without the mask
     local network_ip=$(echo "$network" | cut -d '/' -f 1)
 
-    # Compress the IPv6 address
+    # Compress the inet6 address
     # Remove leading zeros in each hextet
     network_ip=$(echo "$network_ip" | sed -E 's/(^|:)0+([0-9a-f])/\1\2/g')
     # Replace the longest sequence of zero hextets with ::
@@ -48,7 +48,7 @@ calculate_ipv6_subnet() {
     echo "${network_ip}/${mask}"
 }
 
-is_ipv4_in_use() {
+is_inet_in_use() {
     local ip="$1"
     local used_ips=("${@:2}")
     for used_ip in "${used_ips[@]}"; do
@@ -59,7 +59,7 @@ is_ipv4_in_use() {
     return 1
 }
 
-is_ipv6_in_use() {
+is_inet6_in_use() {
     local ip="$1"
     local used_ips=("${@:2}")
     for used_ip in "${used_ips[@]}"; do
@@ -70,40 +70,40 @@ is_ipv6_in_use() {
     return 1
 }
 
-find_next_ipv4() {
-    local base_ipv4="$1"
+find_next_inet() {
+    local base_inet="$1"
     local mask="$2"
     local used_ips=("${@:3}")
     local octet=2
     local max_octet=$((256 - 1))
     while [[ $octet -le $max_octet ]]; do
-        local candidate="${base_ipv4}.${octet}"
-        if ! is_ipv4_in_use "$candidate" "${used_ips[@]}"; then
+        local candidate="${base_inet}.${octet}"
+        if ! is_inet_in_use "$candidate" "${used_ips[@]}"; then
             echo "$candidate/$mask"
             return 0
         fi
         ((octet++))
     done
-    echo "Error: No available IPv4 addresses in $base_ipv4.0/$mask."
+    echo "Error: No available inet addresses in $base_inet.0/$mask."
     return 1
 }
 
-find_next_ipv6() {
-    local base_ipv6="$1"
+find_next_inet6() {
+    local base_inet6="$1"
     local mask="$2"
     local used_ips=("${@:3}")
     local segment=2
     local max_segment=$((16#ffff))
     while [[ $segment -le $max_segment ]]; do
         local candidate_segment=$(printf "%x" "$segment")
-        local candidate="${base_ipv6}:${candidate_segment}"
-        if ! is_ipv6_in_use "$candidate" "${used_ips[@]}"; then
+        local candidate="${base_inet6}:${candidate_segment}"
+        if ! is_inet6_in_use "$candidate" "${used_ips[@]}"; then
             echo "$candidate/$mask"
             return 0
         fi
         ((segment++))
     done
-    echo "Error: No available IPv6 addresses in $base_ipv6::$mask."
+    echo "Error: No available inet6 addresses in $base_inet6::$mask."
     return 1
 }
 
@@ -126,14 +126,14 @@ check_duplicate_client_names() {
 }
 
 cleanup_conflicting_interfaces() {
-    local new_ipv4="$1"
-    local new_ipv6="$2"
+    local new_inet="$1"
+    local new_inet6="$2"
     local new_interface="$3"
 
     for iface in $(ip link show type wireguard | grep -oP '^\d+: \K\w+'); do
         if [[ "$iface" != "$new_interface" ]]; then
-            if ip addr show "$iface" | grep -q "$new_ipv4\|$new_ipv6"; then
-                echo "Found conflicting interface '$iface' using IPs $new_ipv4 or $new_ipv6. Cleaning up..."
+            if ip addr show "$iface" | grep -q "$new_inet\|$new_inet6"; then
+                echo "Found conflicting interface '$iface' using IPs $new_inet or $new_inet6. Cleaning up..."
                 systemctl stop wg-quick@"$iface" 2>/dev/null || echo "Service $iface not running."
                 systemctl disable wg-quick@"$iface" 2>/dev/null || true
                 ip link delete "$iface" 2>/dev/null || echo "Failed to delete $iface, may already be gone."
@@ -155,18 +155,18 @@ generate_full_configs() {
     public_endpoint=$(yq e '.local_peer.public_endpoint' config.yaml)
     interface_name=$(yq e '.local_peer.interface_name' config.yaml)
     [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
-    ipv4_enabled=$(yq e '.local_peer.ipv4.enabled' config.yaml)
-    server_ipv4=$(yq e '.local_peer.ipv4.gateway' config.yaml)
-    server_ipv4_ip=$(echo "$server_ipv4" | cut -d '/' -f 1)
-    server_ipv4_mask=$(echo "$server_ipv4" | cut -d '/' -f 2)
-    base_ipv4=$(echo "$server_ipv4_ip" | cut -d '.' -f 1-3)
-    ipv6_enabled=$(yq e '.local_peer.ipv6.enabled' config.yaml)
-    server_ipv6=$(yq e '.local_peer.ipv6.gateway' config.yaml)
-    server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
-    server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
-    base_ipv6=$(echo "$server_ipv6_ip" | sed 's/:[0-9a-f]*$//')
+    inet_enabled=$(yq e '.local_peer.inet.enabled' config.yaml)
+    server_inet=$(yq e '.local_peer.inet.gateway' config.yaml)
+    server_inet_ip=$(echo "$server_inet" | cut -d '/' -f 1)
+    server_inet_mask=$(echo "$server_inet" | cut -d '/' -f 2)
+    base_inet=$(echo "$server_inet_ip" | cut -d '.' -f 1-3)
+    inet6_enabled=$(yq e '.local_peer.inet6.enabled' config.yaml)
+    server_inet6=$(yq e '.local_peer.inet6.gateway' config.yaml)
+    server_inet6_ip=$(echo "$server_inet6" | cut -d '/' -f 1)
+    server_inet6_mask=$(echo "$server_inet6" | cut -d '/' -f 2)
+    base_inet6=$(echo "$server_inet6_ip" | sed 's/:[0-9a-f]*$//')
 
-    cleanup_conflicting_interfaces "$server_ipv4_ip" "$server_ipv6_ip" "$interface_name"
+    cleanup_conflicting_interfaces "$server_inet_ip" "$server_inet6_ip" "$interface_name"
 
     mkdir -p "$(dirname "$0")/keys"
     original_umask=$(umask)
@@ -180,7 +180,7 @@ generate_full_configs() {
 
     cat << EOF > /etc/wireguard/"${interface_name}.conf"
 [Interface]
-Address = $server_ipv4$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", $server_ipv6" )
+Address = $server_inet$( [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", $server_inet6" )
 PrivateKey = $server_private_key
 ListenPort = $port
 MTU = $mtu
@@ -203,19 +203,19 @@ EOF
         else
             endpoint=$(wget -qO- https://api4.ipify.org || curl -s https://api4.ipify.org)
             if [[ -z "$endpoint" ]]; then
-                echo "Error: Could not auto-detect public IP (neither IPv6 nor IPv4)."
+                echo "Error: Could not auto-detect public IP (neither inet6 nor inet)."
                 return 1
             fi
         fi
     fi
 
-    local -a used_ipv4s=("$server_ipv4_ip")
-    local -a used_ipv6s=("$server_ipv6_ip")
+    local -a used_inets=("$server_inet_ip")
+    local -a used_inet6s=("$server_inet6_ip")
     for i in $(seq 0 $(($number_of_clients - 1))); do
-        local ipv4=$(yq e ".remote_peer[$i].ipv4_address" config.yaml)
-        local ipv6=$(yq e ".remote_peer[$i].ipv6_address" config.yaml)
-        [[ "$ipv4" != "null" && -n "$ipv4" ]] && used_ipv4s+=("$(echo "$ipv4" | cut -d '/' -f 1)")
-        [[ "$ipv6" != "null" && -n "$ipv6" ]] && used_ipv6s+=("$(echo "$ipv6" | cut -d '/' -f 1)")
+        local inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
+        local inet6=$(yq e ".remote_peer[$i].inet6_address" config.yaml)
+        [[ "$inet" != "null" && -n "$inet" ]] && used_inets+=("$(echo "$inet" | cut -d '/' -f 1)")
+        [[ "$inet6" != "null" && -n "$inet6" ]] && used_inet6s+=("$(echo "$inet6" | cut -d '/' -f 1)")
     done
 
     for i in $(seq 0 $(($number_of_clients - 1))); do
@@ -226,26 +226,26 @@ EOF
         client_allowed_ips=$(yq e ".remote_peer[$i].allowed_ips" config.yaml)
         client_persistent_keepalive=$(yq e ".remote_peer[$i].persistent_keepalive" config.yaml)
 
-        # Always assign new IPv4 based on current gateway
-        if [[ "$ipv4_enabled" == "true" ]]; then
-            client_ipv4=$(find_next_ipv4 "$base_ipv4" "$server_ipv4_mask" "${used_ipv4s[@]}")
+        # Always assign new inet based on current gateway
+        if [[ "$inet_enabled" == "true" ]]; then
+            client_inet=$(find_next_inet "$base_inet" "$server_inet_mask" "${used_inets[@]}")
             if [[ $? -ne 0 ]]; then
-                echo "$client_ipv4"
+                echo "$client_inet"
                 return 1
             fi
-            used_ipv4s+=("$(echo "$client_ipv4" | cut -d '/' -f 1)")
-            yq e -i ".remote_peer[$i].ipv4_address = \"$client_ipv4\"" config.yaml.tmp
+            used_inets+=("$(echo "$client_inet" | cut -d '/' -f 1)")
+            yq e -i ".remote_peer[$i].inet_address = \"$client_inet\"" config.yaml.tmp
         fi
 
-        # Always assign new IPv6 based on current gateway
-        if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
-            client_ipv6=$(find_next_ipv6 "$base_ipv6" "$server_ipv6_mask" "${used_ipv6s[@]}")
+        # Always assign new inet6 based on current gateway
+        if [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
+            client_inet6=$(find_next_inet6 "$base_inet6" "$server_inet6_mask" "${used_inet6s[@]}")
             if [[ $? -ne 0 ]]; then
-                echo "$client_ipv6"
+                echo "$client_inet6"
                 return 1
             fi
-            used_ipv6s+=("$(echo "$client_ipv6" | cut -d '/' -f 1)")
-            yq e -i ".remote_peer[$i].ipv6_address = \"$client_ipv6\"" config.yaml.tmp
+            used_inet6s+=("$(echo "$client_inet6" | cut -d '/' -f 1)")
+            yq e -i ".remote_peer[$i].inet6_address = \"$client_inet6\"" config.yaml.tmp
         fi
 
         client_key_dir="$(dirname "$0")/keys/${client_name}-${interface_name}"
@@ -260,19 +260,19 @@ EOF
                   "$client_key_dir/${client_name}-${interface_name}-public.key" \
                   "$client_key_dir/${client_name}-${interface_name}-psk.key"
 
-        client_ipv4_ip=$(echo "$client_ipv4" | cut -d '/' -f 1)
-        client_ipv6_ip=$(echo "$client_ipv6" | cut -d '/' -f 1)
+        client_inet_ip=$(echo "$client_inet" | cut -d '/' -f 1)
+        client_inet6_ip=$(echo "$client_inet6" | cut -d '/' -f 1)
         cat << EOF >> /etc/wireguard/"${interface_name}.conf"
 
 [Peer]
 PublicKey = $client_public_key
 PresharedKey = $psk
-AllowedIPs = ${client_ipv4_ip}/32$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", ${client_ipv6_ip}/128" )
+AllowedIPs = ${client_inet_ip}/32$( [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", ${client_inet6_ip}/128" )
 EOF
 
         cat << EOF > "$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
 [Interface]
-Address = $client_ipv4$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", $client_ipv6" )
+Address = $client_inet$( [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", $client_inet6" )
 DNS = $client_dns
 PrivateKey = $client_private_key
 MTU = $client_mtu
@@ -302,17 +302,17 @@ generate_client_configs() {
     port=$(yq e '.local_peer.port' config.yaml)
     interface_name=$(yq e '.local_peer.interface_name' config.yaml)
     [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
-    ipv4_enabled=$(yq e '.local_peer.ipv4.enabled' config.yaml)
-    server_ipv4=$(yq e '.local_peer.ipv4.gateway' config.yaml)
-    server_ipv4_ip=$(echo "$server_ipv4" | cut -d '/' -f 1)
-    server_ipv4_mask=$(echo "$server_ipv4" | cut -d '/' -f 2)
-    base_ipv4=$(echo "$server_ipv4_ip" | cut -d '.' -f 1-3)
-    ipv6_enabled=$(yq e '.local_peer.ipv6.enabled' config.yaml)
-    server_ipv6=$(yq e '.local_peer.ipv6.gateway' config.yaml)
-    server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
-    server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
-    # Remove initial vpn_ipv6_subnet assignment here
-    base_ipv6=$(echo "$server_ipv6_ip" | sed 's/:[0-9a-f]*$//')
+    inet_enabled=$(yq e '.local_peer.inet.enabled' config.yaml)
+    server_inet=$(yq e '.local_peer.inet.gateway' config.yaml)
+    server_inet_ip=$(echo "$server_inet" | cut -d '/' -f 1)
+    server_inet_mask=$(echo "$server_inet" | cut -d '/' -f 2)
+    base_inet=$(echo "$server_inet_ip" | cut -d '.' -f 1-3)
+    inet6_enabled=$(yq e '.local_peer.inet6.enabled' config.yaml)
+    server_inet6=$(yq e '.local_peer.inet6.gateway' config.yaml)
+    server_inet6_ip=$(echo "$server_inet6" | cut -d '/' -f 1)
+    server_inet6_mask=$(echo "$server_inet6" | cut -d '/' -f 2)
+    # Remove initial vpn_inet6_subnet assignment here
+    base_inet6=$(echo "$server_inet6_ip" | sed 's/:[0-9a-f]*$//')
     server_public_key=$(wg show "$interface_name" public-key)
 
     public_endpoint=$(yq e '.local_peer.public_endpoint' config.yaml)
@@ -329,7 +329,7 @@ generate_client_configs() {
         else
             endpoint=$(wget -qO- https://api4.ipify.org || curl -s https://api4.ipify.org)
             if [[ -z "$endpoint" ]]; then
-                echo "Error: Could not auto-detect public IP (neither IPv6 nor IPv4)."
+                echo "Error: Could not auto-detect public IP (neither inet6 nor inet)."
                 return 1
             fi
         fi
@@ -341,14 +341,14 @@ generate_client_configs() {
     original_umask=$(umask)
     umask 077
 
-    local -a used_ipv4s=("$server_ipv4_ip")
-    local -a used_ipv6s=("$server_ipv6_ip")
+    local -a used_inets=("$server_inet_ip")
+    local -a used_inet6s=("$server_inet6_ip")
     local number_of_clients=$(yq e '.remote_peer | length' config.yaml)
     for i in $(seq 0 $(($number_of_clients - 1))); do
-        local ipv4=$(yq e ".remote_peer[$i].ipv4_address" config.yaml)
-        local ipv6=$(yq e ".remote_peer[$i].ipv6_address" config.yaml)
-        [[ "$ipv4" != "null" && -n "$ipv4" ]] && used_ipv4s+=("$(echo "$ipv4" | cut -d '/' -f 1)")
-        [[ "$ipv6" != "null" && -n "$ipv6" ]] && used_ipv6s+=("$(echo "$ipv6" | cut -d '/' -f 1)")
+        local inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
+        local inet6=$(yq e ".remote_peer[$i].inet6_address" config.yaml)
+        [[ "$inet" != "null" && -n "$inet" ]] && used_inets+=("$(echo "$inet" | cut -d '/' -f 1)")
+        [[ "$inet6" != "null" && -n "$inet6" ]] && used_inet6s+=("$(echo "$inet6" | cut -d '/' -f 1)")
     done
 
     for i in "${changed_clients[@]}"; do
@@ -359,29 +359,29 @@ generate_client_configs() {
         client_allowed_ips=$(yq e ".remote_peer[$i].allowed_ips" config.yaml)
         client_persistent_keepalive=$(yq e ".remote_peer[$i].persistent_keepalive" config.yaml)
 
-        client_ipv4=$(yq e ".remote_peer[$i].ipv4_address" config.yaml)
-        if [[ "$ipv4_enabled" == "true" && ( "$client_ipv4" == "null" || -z "$client_ipv4" ) ]]; then
-            client_ipv4=$(find_next_ipv4 "$base_ipv4" "$server_ipv4_mask" "${used_ipv4s[@]}")
+        client_inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
+        if [[ "$inet_enabled" == "true" && ( "$client_inet" == "null" || -z "$client_inet" ) ]]; then
+            client_inet=$(find_next_inet "$base_inet" "$server_inet_mask" "${used_inets[@]}")
             if [[ $? -ne 0 ]]; then
-                echo "$client_ipv4"
+                echo "$client_inet"
                 return 1
             fi
-            used_ipv4s+=("$(echo "$client_ipv4" | cut -d '/' -f 1)")
+            used_inets+=("$(echo "$client_inet" | cut -d '/' -f 1)")
         fi
 
-        client_ipv6=$(yq e ".remote_peer[$i].ipv6_address" config.yaml)
-        if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 && ( "$client_ipv6" == "null" || -z "$client_ipv6" ) ]]; then
-            client_ipv6=$(find_next_ipv6 "$base_ipv6" "$server_ipv6_mask" "${used_ipv6s[@]}")
+        client_inet6=$(yq e ".remote_peer[$i].inet6_address" config.yaml)
+        if [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 && ( "$client_inet6" == "null" || -z "$client_inet6" ) ]]; then
+            client_inet6=$(find_next_inet6 "$base_inet6" "$server_inet6_mask" "${used_inet6s[@]}")
             if [[ $? -ne 0 ]]; then
-                echo "$client_ipv6"
+                echo "$client_inet6"
                 return 1
             fi
-            used_ipv6s+=("$(echo "$client_ipv6" | cut -d '/' -f 1)")
+            used_inet6s+=("$(echo "$client_inet6" | cut -d '/' -f 1)")
         fi
 
-        yq e -i ".remote_peer[$i].ipv4_address = \"$client_ipv4\"" config.yaml.tmp
-        if [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
-            yq e -i ".remote_peer[$i].ipv6_address = \"$client_ipv6\"" config.yaml.tmp
+        yq e -i ".remote_peer[$i].inet_address = \"$client_inet\"" config.yaml.tmp
+        if [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
+            yq e -i ".remote_peer[$i].inet6_address = \"$client_inet6\"" config.yaml.tmp
         fi
 
         client_key_dir="$(dirname "$0")/keys/${client_name}-${interface_name}"
@@ -396,9 +396,9 @@ generate_client_configs() {
                   "$client_key_dir/${client_name}-${interface_name}-public.key" \
                   "$client_key_dir/${client_name}-${interface_name}-psk.key"
 
-        client_ipv4_ip=$(echo "$client_ipv4" | cut -d '/' -f 1)
-        client_ipv6_ip=$(echo "$client_ipv6" | cut -d '/' -f 1)
-        client_allowed_ips_combined="${client_ipv4_ip}/32$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", ${client_ipv6_ip}/128" )"
+        client_inet_ip=$(echo "$client_inet" | cut -d '/' -f 1)
+        client_inet6_ip=$(echo "$client_inet6" | cut -d '/' -f 1)
+        client_allowed_ips_combined="${client_inet_ip}/32$( [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", ${client_inet6_ip}/128" )"
 
         old_name=$(yq e ".remote_peer[$i].name" "$(dirname "$0")/config.yaml.backup")
         if [[ "$old_name" != "$client_name" && -n "$old_name" ]]; then
@@ -407,7 +407,7 @@ generate_client_configs() {
         fi
 
         temp_file=$(mktemp)
-        awk -v ip="$client_ipv4_ip" '
+        awk -v ip="$client_inet_ip" '
         BEGIN { in_section = 0; buffer = ""; need_blank = 0 }
         /^\[(Interface|Peer)\]$/ {
             if (in_section && keep) {
@@ -448,7 +448,7 @@ EOF
 
         cat << EOF > "$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
 [Interface]
-Address = $client_ipv4$( [[ "$ipv6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", $client_ipv6" )
+Address = $client_inet$( [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", $client_inet6" )
 DNS = $client_dns
 PrivateKey = $client_private_key
 MTU = $client_mtu
@@ -469,69 +469,69 @@ EOF
 
 configure_firewall() {
     local port="$1"
-    local vpn_ipv4_subnet="$2"
-    local vpn_ipv6_subnet="$3"
+    local vpn_inet_subnet="$2"
+    local vpn_inet6_subnet="$3"
     local host_interface=$(yq e '.local_peer.host_interface' config.yaml)
-    local ipv4_nat=$(yq e '.local_peer.ipv4.nat44' config.yaml)
-    local ipv6_nat=$(yq e '.local_peer.ipv6.nat66' config.yaml)
-    local ipv4_dynamic=$(yq e '.local_peer.ipv4.dynamic' config.yaml)
-    local ipv6_dynamic=$(yq e '.local_peer.ipv6.dynamic' config.yaml)
-    local ipv4_enabled=$(yq e '.local_peer.ipv4.enabled' config.yaml)
-    local ipv6_enabled=$(yq e '.local_peer.ipv6.enabled' config.yaml)
+    local inet_nat=$(yq e '.local_peer.inet.nat44' config.yaml)
+    local inet6_nat=$(yq e '.local_peer.inet6.nat66' config.yaml)
+    local inet_dynamic=$(yq e '.local_peer.inet.dynamic' config.yaml)
+    local inet6_dynamic=$(yq e '.local_peer.inet6.dynamic' config.yaml)
+    local inet_enabled=$(yq e '.local_peer.inet.enabled' config.yaml)
+    local inet6_enabled=$(yq e '.local_peer.inet6.enabled' config.yaml)
 
-    local ipv4_snat_ip=$(yq e '.local_peer.ipv4.nat44_public_IP' config.yaml)
-    local ipv6_snat_ip=$(yq e '.local_peer.ipv6.nat66_public_IP' config.yaml)
+    local inet_snat_ip=$(yq e '.local_peer.inet.nat44_public_IP' config.yaml)
+    local inet6_snat_ip=$(yq e '.local_peer.inet6.nat66_public_IP' config.yaml)
 
-    echo "Debug: vpn_ipv6_subnet in configure_firewall: $vpn_ipv6_subnet"
+    echo "Debug: vpn_inet6_subnet in configure_firewall: $vpn_inet6_subnet"
 
     if [[ -z "$host_interface" || "$host_interface" == "null" ]]; then
         echo "Error: host_interface is not set in config.yaml."
         return 1
     fi
-    if [[ "$ipv4_enabled" == "true" && -z "$vpn_ipv4_subnet" ]]; then
-        echo "Error: vpn_ipv4_subnet is not set but IPv4 is enabled."
+    if [[ "$inet_enabled" == "true" && -z "$vpn_inet_subnet" ]]; then
+        echo "Error: vpn_inet_subnet is not set but inet is enabled."
         return 1
     fi
-    if [[ "$ipv6_enabled" == "true" && -z "$vpn_ipv6_subnet" ]]; then
-        echo "Error: vpn_ipv6_subnet is not set but IPv6 is enabled."
-        return 1
-    fi
-
-    server_ipv4_static=$(ip -4 addr show "$host_interface" | grep -oP 'inet \K[\d.]+' | head -n 1)
-    server_ipv6_static=$(ip -6 addr show "$host_interface" scope global | grep -oP 'inet6 \K[0-9a-f:]+' | head -n 1)
-
-    if [[ "$ipv4_snat_ip" == "null" || -z "$ipv4_snat_ip" ]]; then
-        ipv4_snat_ip="$server_ipv4_static"
-    fi
-
-    if [[ "$ipv6_snat_ip" == "null" || -z "$ipv6_snat_ip" ]]; then
-        ipv6_snat_ip="$server_ipv6_static"
-    fi
-
-    if [[ "$ipv4_nat" == "true" && "$ipv4_dynamic" != "true" && -z "$ipv4_snat_ip" ]]; then
-        echo "Error: No IPv4 SNAT IP available. Either specify local_peer.ipv4.nat44_public_IP, ensure host_interface has an IPv4, or set ipv4.dynamic to true."
+    if [[ "$inet6_enabled" == "true" && -z "$vpn_inet6_subnet" ]]; then
+        echo "Error: vpn_inet6_subnet is not set but inet6 is enabled."
         return 1
     fi
 
-    if [[ "$ipv6_nat" == "true" && "$ipv6_dynamic" != "true" && -z "$ipv6_snat_ip" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
-        echo "Error: No IPv6 SNAT IP available. Either specify local_peer.ipv6.nat66_public_IP, ensure host_interface has an IPv6, or set ipv6.dynamic to true."
+    server_inet_static=$(ip -4 addr show "$host_interface" | grep -oP 'inet \K[\d.]+' | head -n 1)
+    server_inet6_static=$(ip -6 addr show "$host_interface" scope global | grep -oP 'inet6 \K[0-9a-f:]+' | head -n 1)
+
+    if [[ "$inet_snat_ip" == "null" || -z "$inet_snat_ip" ]]; then
+        inet_snat_ip="$server_inet_static"
+    fi
+
+    if [[ "$inet6_snat_ip" == "null" || -z "$inet6_snat_ip" ]]; then
+        inet6_snat_ip="$server_inet6_static"
+    fi
+
+    if [[ "$inet_nat" == "true" && "$inet_dynamic" != "true" && -z "$inet_snat_ip" ]]; then
+        echo "Error: No inet SNAT IP available. Either specify local_peer.inet.nat44_public_IP, ensure host_interface has an inet, or set inet.dynamic to true."
+        return 1
+    fi
+
+    if [[ "$inet6_nat" == "true" && "$inet6_dynamic" != "true" && -z "$inet6_snat_ip" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
+        echo "Error: No inet6 SNAT IP available. Either specify local_peer.inet6.nat66_public_IP, ensure host_interface has an inet6, or set inet6.dynamic to true."
         return 1
     fi
 
     local -a nat_rules=()
-    if [[ "$ipv4_nat" == "true" && "$ipv4_enabled" == "true" ]]; then
-        if [[ "$ipv4_dynamic" == "true" ]]; then
-            nat_rules+=("ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" masquerade persistent")
-        elif [[ -n "$ipv4_snat_ip" ]]; then
-            nat_rules+=("ip saddr $vpn_ipv4_subnet oifname \"$host_interface\" snat to $ipv4_snat_ip persistent")
+    if [[ "$inet_nat" == "true" && "$inet_enabled" == "true" ]]; then
+        if [[ "$inet_dynamic" == "true" ]]; then
+            nat_rules+=("ip saddr $vpn_inet_subnet oifname \"$host_interface\" masquerade persistent")
+        elif [[ -n "$inet_snat_ip" ]]; then
+            nat_rules+=("ip saddr $vpn_inet_subnet oifname \"$host_interface\" snat to $inet_snat_ip persistent")
         fi
     fi
 
-    if [[ "$ipv6_nat" == "true" && "$ipv6_enabled" == "true" ]]; then
-        if [[ "$ipv6_dynamic" == "true" ]]; then
-            nat_rules+=("ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" masquerade persistent")
-        elif [[ -n "$ipv6_snat_ip" ]]; then
-            nat_rules+=("ip6 saddr $vpn_ipv6_subnet oifname \"$host_interface\" snat to $ipv6_snat_ip persistent")
+    if [[ "$inet6_nat" == "true" && "$inet6_enabled" == "true" ]]; then
+        if [[ "$inet6_dynamic" == "true" ]]; then
+            nat_rules+=("ip6 saddr $vpn_inet6_subnet oifname \"$host_interface\" masquerade persistent")
+        elif [[ -n "$inet6_snat_ip" ]]; then
+            nat_rules+=("ip6 saddr $vpn_inet6_subnet oifname \"$host_interface\" snat to $inet6_snat_ip persistent")
         fi
     fi
 
@@ -666,44 +666,44 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
         exit 1
     fi
 
-    ipv4_enabled=$(yq e '.local_peer.ipv4.enabled' config.yaml)
-    ipv6_enabled=$(yq e '.local_peer.ipv6.enabled' config.yaml)
-    server_ipv4=$(yq e '.local_peer.ipv4.gateway' config.yaml)
-    server_ipv4_ip=$(echo "$server_ipv4" | cut -d '/' -f 1)
-    server_ipv6_mask=$(echo "$server_ipv4" | cut -d '/' -f 2)
-    base_ipv4=$(echo "$server_ipv4_ip" | cut -d '.' -f 1-3)
-    server_ipv6=$(yq e '.local_peer.ipv6.gateway' config.yaml)
-    server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
-    server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
+    inet_enabled=$(yq e '.local_peer.inet.enabled' config.yaml)
+    inet6_enabled=$(yq e '.local_peer.inet6.enabled' config.yaml)
+    server_inet=$(yq e '.local_peer.inet.gateway' config.yaml)
+    server_inet_ip=$(echo "$server_inet" | cut -d '/' -f 1)
+    server_inet6_mask=$(echo "$server_inet" | cut -d '/' -f 2)
+    base_inet=$(echo "$server_inet_ip" | cut -d '.' -f 1-3)
+    server_inet6=$(yq e '.local_peer.inet6.gateway' config.yaml)
+    server_inet6_ip=$(echo "$server_inet6" | cut -d '/' -f 1)
+    server_inet6_mask=$(echo "$server_inet6" | cut -d '/' -f 2)
     port=$(yq e '.local_peer.port' config.yaml)
 
-    if [[ "$ipv4_enabled" == "true" ]]; then
-        vpn_ipv4_subnet=$(netcalc -n "$server_ipv4" | grep -oP 'Network\s*:\s*\K[\d.]+/\d+')
-        if [[ -z "$vpn_ipv4_subnet" ]]; then
-            echo "Error: Failed to calculate IPv4 subnet using netcalc for $server_ipv4."
+    if [[ "$inet_enabled" == "true" ]]; then
+        vpn_inet_subnet=$(netcalc -n "$server_inet" | grep -oP 'Network\s*:\s*\K[\d.]+/\d+')
+        if [[ -z "$vpn_inet_subnet" ]]; then
+            echo "Error: Failed to calculate inet subnet using netcalc for $server_inet."
             exit 1
         fi
     fi
 
-    if [[ "$ipv6_enabled" == "true" ]]; then
-        if [[ $server_ipv6_mask -lt 0 || $server_ipv6_mask -gt 128 ]]; then
+    if [[ "$inet6_enabled" == "true" ]]; then
+        if [[ $server_inet6_mask -lt 0 || $server_inet6_mask -gt 128 ]]; then
             echo "Error: Invalid prefix length. Must be between 0 and 128."
             exit 1
         fi
 
-        vpn_ipv6_subnet=$(calculate_ipv6_subnet "$server_ipv6_ip" "$server_ipv6_mask")
-        echo "Debug: Calculated vpn_ipv6_subnet: $vpn_ipv6_subnet"
+        vpn_inet6_subnet=$(calculate_inet6_subnet "$server_inet6_ip" "$server_inet6_mask")
+        echo "Debug: Calculated vpn_inet6_subnet: $vpn_inet6_subnet"
     fi
 
     echo
     echo "WireGuard installation is ready to begin."
 
-    configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet"
+    configure_firewall "$port" "$vpn_inet_subnet" "$vpn_inet6_subnet"
 
-    sysctl -w net.ipv4.ip_forward=1
-    sysctl -w net.ipv6.conf.all.forwarding=1
-    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-    echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
+    sysctl -w net.inet.ip_forward=1
+    sysctl -w net.inet6.conf.all.forwarding=1
+    echo "net.inet.ip_forward=1" >> /etc/sysctl.conf
+    echo "net.inet6.conf.all.forwarding=1" >> /etc/sysctl.conf
 
     echo "Activating WireGuard interface..."
     if systemctl enable --now wg-quick@${interface_name}; then
@@ -763,29 +763,29 @@ else
             port=$(yq e '.local_peer.port' config.yaml)
             interface_name=$(yq e '.local_peer.interface_name' config.yaml)
             [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
-            ipv4_enabled=$(yq e '.local_peer.ipv4.enabled' config.yaml)
-            server_ipv4=$(yq e '.local_peer.ipv4.gateway' config.yaml)
-            server_ipv4_ip=$(echo "$server_ipv4" | cut -d '/' -f 1)
-            server_ipv4_mask=$(echo "$server_ipv4" | cut -d '/' -f 2)
-            base_ipv4=$(echo "$server_ipv4_ip" | cut -d '.' -f 1-3)
-            ipv6_enabled=$(yq e '.local_peer.ipv6.enabled' config.yaml)
-            server_ipv6=$(yq e '.local_peer.ipv6.gateway' config.yaml)
-            server_ipv6_ip=$(echo "$server_ipv6" | cut -d '/' -f 1)
-            server_ipv6_mask=$(echo "$server_ipv6" | cut -d '/' -f 2)
-            if [[ "$ipv4_enabled" == "true" ]]; then
-                vpn_ipv4_subnet=$(netcalc -n "$server_ipv4" | grep -oP 'Network\s*:\s*\K[\d.]+/\d+')
-                if [[ -z "$vpn_ipv4_subnet" ]]; then
-                    echo "Error: Failed to calculate IPv4 subnet using netcalc for $server_ipv4."
+            inet_enabled=$(yq e '.local_peer.inet.enabled' config.yaml)
+            server_inet=$(yq e '.local_peer.inet.gateway' config.yaml)
+            server_inet_ip=$(echo "$server_inet" | cut -d '/' -f 1)
+            server_inet_mask=$(echo "$server_inet" | cut -d '/' -f 2)
+            base_inet=$(echo "$server_inet_ip" | cut -d '.' -f 1-3)
+            inet6_enabled=$(yq e '.local_peer.inet6.enabled' config.yaml)
+            server_inet6=$(yq e '.local_peer.inet6.gateway' config.yaml)
+            server_inet6_ip=$(echo "$server_inet6" | cut -d '/' -f 1)
+            server_inet6_mask=$(echo "$server_inet6" | cut -d '/' -f 2)
+            if [[ "$inet_enabled" == "true" ]]; then
+                vpn_inet_subnet=$(netcalc -n "$server_inet" | grep -oP 'Network\s*:\s*\K[\d.]+/\d+')
+                if [[ -z "$vpn_inet_subnet" ]]; then
+                    echo "Error: Failed to calculate inet subnet using netcalc for $server_inet."
                     exit 1
                 fi
             fi
-            if [[ "$ipv6_enabled" == "true" ]]; then
-                if [[ $server_ipv6_mask -lt 0 || $server_ipv6_mask -gt 128 ]]; then
+            if [[ "$inet6_enabled" == "true" ]]; then
+                if [[ $server_inet6_mask -lt 0 || $server_inet6_mask -gt 128 ]]; then
                     echo "Error: Invalid prefix length. Must be between 0 and 128."
                     exit 1
                 fi
-                vpn_ipv6_subnet=$(calculate_ipv6_subnet "$server_ipv6_ip" "$server_ipv6_mask")
-                echo "Debug: Calculated vpn_ipv6_subnet: $vpn_ipv6_subnet"
+                vpn_inet6_subnet=$(calculate_inet6_subnet "$server_inet6_ip" "$server_inet6_mask")
+                echo "Debug: Calculated vpn_inet6_subnet: $vpn_inet6_subnet"
             fi
 
             if [[ -f "$(dirname "$0")/config.yaml.backup" ]]; then
@@ -871,15 +871,15 @@ else
                 done
 
                 # Check for gateway changes
-                old_server_ipv4=$(yq e '.local_peer.ipv4.gateway' "$(dirname "$0")/config.yaml.backup")
-                old_server_ipv6=$(yq e '.local_peer.ipv6.gateway' "$(dirname "$0")/config.yaml.backup")
+                old_server_inet=$(yq e '.local_peer.inet.gateway' "$(dirname "$0")/config.yaml.backup")
+                old_server_inet6=$(yq e '.local_peer.inet6.gateway' "$(dirname "$0")/config.yaml.backup")
                 gateway_changed=false
-                if [[ "$ipv4_enabled" == "true" && "$server_ipv4" != "$old_server_ipv4" ]]; then
-                    echo "IPv4 gateway changed from '$old_server_ipv4' to '$server_ipv4'."
+                if [[ "$inet_enabled" == "true" && "$server_inet" != "$old_server_inet" ]]; then
+                    echo "inet gateway changed from '$old_server_inet' to '$server_inet'."
                     gateway_changed=true
                 fi
-                if [[ "$ipv6_enabled" == "true" && "$server_ipv6" != "$old_server_ipv6" ]]; then
-                    echo "IPv6 gateway changed from '$old_server_ipv6' to '$server_ipv6'."
+                if [[ "$inet6_enabled" == "true" && "$server_inet6" != "$old_server_inet6" ]]; then
+                    echo "inet6 gateway changed from '$old_server_inet6' to '$server_inet6'."
                     gateway_changed=true
                 fi
 
@@ -894,7 +894,7 @@ else
                     chmod 600 "$(dirname "$0")/config.yaml.backup"
 
                     clear_firewall_rules
-                    configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet"
+                    configure_firewall "$port" "$vpn_inet_subnet" "$vpn_inet6_subnet"
 
                     echo "Updated client configurations:"
                     if ls "$(dirname "$0")/wireguard-configs"/*-"${interface_name}.conf" >/dev/null 2>&1; then
@@ -925,7 +925,7 @@ else
                         chmod 600 "$(dirname "$0")/config.yaml.backup"
 
                         clear_firewall_rules
-                        configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet"
+                        configure_firewall "$port" "$vpn_inet_subnet" "$vpn_inet6_subnet"
 
                         echo "Updated client configurations:"
                         if ls "$(dirname "$0")/wireguard-configs"/*-"${interface_name}.conf" >/dev/null 2>&1; then
@@ -965,7 +965,7 @@ else
                             chmod 600 "$(dirname "$0")/config.yaml.backup"
 
                             clear_firewall_rules
-                            configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet"
+                            configure_firewall "$port" "$vpn_inet_subnet" "$vpn_inet6_subnet"
 
                             echo "Updated client configurations:"
                             mkdir -p "$(dirname "$0")/wireguard-configs/qr"
@@ -1003,7 +1003,7 @@ else
                 chmod 600 "$(dirname "$0")/config.yaml.backup"
 
                 clear_firewall_rules
-                configure_firewall "$port" "$vpn_ipv4_subnet" "$vpn_ipv6_subnet"
+                configure_firewall "$port" "$vpn_inet_subnet" "$vpn_inet6_subnet"
 
                 echo "Updated client configurations:"
                 if ls "$(dirname "$0")/wireguard-configs"/*-"${interface_name}.conf" >/dev/null 2>&1; then
