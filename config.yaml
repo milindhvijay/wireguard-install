@@ -5,7 +5,7 @@ local_peer:
   port: 51820
   host_interface: eth0
   mtu: 1420
-  public_endpoint: 5.75.189.129
+  public_endpoint:
   inet_dynamic: false
   inet6_dynamic: false
   inet:
