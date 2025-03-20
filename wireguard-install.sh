@@ -561,17 +561,13 @@ EOF
         cp "$nft_file" "${nft_file}.backup-$(date +%F-%T)"
     fi
 
-    # Write the new configuration to wg.nft with the delete command
-    cat << EOF > "$nft_file"
-#!/usr/sbin/nft -f
-
-nft delete table inet wireguard
-
-$wireguard_table
-EOF
+    # Write the new configuration to wg.nft
+    echo '#!/usr/sbin/nft -f' > "$nft_file"
+    echo "" >> "$nft_file"
+    echo "$wireguard_table" >> "$nft_file"
     chmod 600 "$nft_file"
 
-    # Apply the nftables configuration via /etc/nftables.conf
+    # Apply the nftables configuration via /etc/nftables.conf, which includes *.nft
     if ! nft -f /etc/nftables.conf; then
         echo "Error: Failed to apply nftables configuration from /etc/nftables.conf. Restoring wg.nft backup if available."
         if [[ -f "${nft_file}.backup-$(date +%F-%T)" ]]; then
