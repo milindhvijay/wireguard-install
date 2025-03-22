@@ -19,6 +19,20 @@ else
     exit 1
 fi
 
+# Array to store rollback actions
+declare -a rollback_actions=()
+
+# Rollback function to undo changes on failure
+rollback_on_failure() {
+    echo "Error detected. Rolling back changes..."
+    for ((i=${#rollback_actions[@]}-1; i>=0; i--)); do
+        echo "Executing rollback: ${rollback_actions[$i]}"
+        eval "${rollback_actions[$i]}" 2>/dev/null || echo "Warning: Rollback action '${rollback_actions[$i]}' failed."
+    done
+    echo "Rollback complete."
+    exit 1
+}
+
 is_inet_in_use() {
     local ip="$1"
     local used_ips=("${@:2}")
@@ -140,6 +154,7 @@ generate_full_configs() {
     cleanup_conflicting_interfaces "$server_inet_ip" "$server_inet6_ip" "$interface_name"
 
     mkdir -p "$(dirname "$0")/keys"
+    rollback_actions+=("rm -rf \"$(dirname "$0")/keys\"")
     original_umask=$(umask)
     umask 077
 
@@ -156,10 +171,13 @@ PrivateKey = $server_private_key
 ListenPort = $port
 MTU = $mtu
 EOF
+    rollback_actions+=("rm -f /etc/wireguard/${interface_name}.conf")
 
     number_of_clients=$(yq e '.remote_peer | length' config.yaml)
     cp config.yaml config.yaml.tmp
+    rollback_actions+=("rm -f config.yaml.tmp")
     mkdir -p "$(dirname "$0")/wireguard-configs"
+    rollback_actions+=("rm -rf \"$(dirname "$0")/wireguard-configs\"")
 
     if [[ -n "$public_endpoint" && "$public_endpoint" != "null" ]]; then
         if [[ "$public_endpoint" =~ : && ! "$public_endpoint" =~ \. ]]; then
@@ -517,6 +535,7 @@ EOF
 )
 
     mkdir -p /etc/nftables
+    rollback_actions+=("rm -f /etc/nftables/wg.nft")
     local nft_file="/etc/nftables/wg.nft"
 
     if [[ -f "$nft_file" && -s "$nft_file" ]]; then
@@ -536,8 +555,10 @@ EOF
         fi
         return 1
     fi
+    rollback_actions+=("nft delete table inet wireguard")
 
     systemctl restart nftables
+    rollback_actions+=("systemctl restart nftables")
     echo "Firewall rules for WireGuard have been configured in $nft_file."
     return 0
 }
@@ -560,12 +581,16 @@ interface_name=$(yq e '.local_peer.interface_name' config.yaml 2>/dev/null || ec
 [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
 
 if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
+    # Enable error trapping for first run
+    trap 'rollback_on_failure' ERR
+
     echo "Installing WireGuard and other dependencies..."
     if [[ "$os" == "ubuntu" || "$os" == "debian" ]]; then
         apt update
         apt install -y wireguard qrencode nftables ipcalc
+        rollback_actions+=("apt remove -y wireguard qrencode nftables ipcalc")
         if ! command -v ipcalc &>/dev/null; then
-            echo "Error: Failed to install 'ipcalc'. Please install it manually."
+            echo "Error: Failed to install 'ipcalc'. Please install it manually with 'apt install ipcalc'."
             exit 1
         fi
     else
@@ -577,6 +602,7 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
         echo "'yq' not found, installing it automatically..."
         wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq &&\
         chmod +x /usr/bin/yq
+        rollback_actions+=("rm -f /usr/bin/yq")
         if ! command -v yq &>/dev/null; then
             echo "Error: Failed to install 'yq'. Please install it manually."
             exit 1
@@ -593,7 +619,9 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     fi
 
     mkdir -p /etc/wireguard
+    rollback_actions+=("rm -rf /etc/wireguard")
     cp config.yaml "$(dirname "$0")/config.yaml.backup"
+    rollback_actions+=("rm -f \"$(dirname "$0")/config.yaml.backup\"")
     chmod 600 "$(dirname "$0")/config.yaml.backup"
 
     if ! generate_full_configs; then
@@ -631,6 +659,10 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     echo
     echo "WireGuard installation is ready to begin."
 
+    # Backup sysctl.conf before modification
+    cp /etc/sysctl.conf /etc/sysctl.conf.backup-$(date +%F-%T)
+    rollback_actions+=("mv /etc/sysctl.conf.backup-$(date +%F-%T) /etc/sysctl.conf && sysctl -p")
+
     configure_firewall "$port" "$vpn_inet_subnet" "$vpn_inet6_subnet"
 
     sysctl -w net.inet.ip_forward=1
@@ -640,6 +672,7 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
 
     echo "Activating WireGuard interface..."
     if systemctl enable --now wg-quick@${interface_name}; then
+        rollback_actions+=("systemctl disable --now wg-quick@${interface_name}")
         if ! wg show ${interface_name} >/dev/null 2>&1; then
             echo "Warning: ${interface_name} failed to start properly, attempting manual restart..."
             wg-quick down ${interface_name} >/dev/null 2>&1
@@ -661,6 +694,7 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     echo "WireGuard setup complete. Here are the client configurations:"
     if ls "$(dirname "$0")/wireguard-configs"/*-"${interface_name}.conf" >/dev/null 2>&1; then
         mkdir -p "$(dirname "$0")/wireguard-configs/qr"
+        rollback_actions+=("rm -rf \"$(dirname "$0")/wireguard-configs/qr\"")
         for client_conf in "$(dirname "$0")/wireguard-configs"/*-"${interface_name}.conf"; do
             client_name=$(basename "$client_conf" .conf)
             qr_file="$(dirname "$0")/wireguard-configs/qr/${client_name}.png"
@@ -673,6 +707,9 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     else
         echo "No client configuration files found in $(dirname "$0")/wireguard-configs/."
     fi
+
+    # If we reach here, the first run succeeded; disable the trap
+    trap - ERR
 else
     echo "WireGuard is already installed."
     echo "Select an option:"
