@@ -677,38 +677,34 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     sysctl_backup="/etc/sysctl.conf.backup-$(date +%F-%T)"
     cp /etc/sysctl.conf "$sysctl_backup"
 
-    # Check if sysctl settings already exist
-    ipv4_forward_exists=$(grep -c "^net\.ipv4\.ip_forward\s*=\s*1" /etc/sysctl.conf)
-    ipv6_forward_exists=$(grep -c "^net\.ipv6\.conf\.all\.forwarding\s*=\s*1" /etc/sysctl.conf)
-    settings_added=false
+    # Check if sysctl settings already exist as uncommented lines
+    ipv4_forward_active=$(grep -c "^net\.ipv4\.ip_forward\s*=\s*1" /etc/sysctl.conf)
+    ipv6_forward_active=$(grep -c "^net\.ipv6\.conf\.all\.forwarding\s*=\s*1" /etc/sysctl.conf)
+    settings_modified=false
 
     # Apply sysctl settings at runtime
     sysctl -w net.ipv4.ip_forward=1
     sysctl -w net.ipv6.conf.all.forwarding=1
 
-    # Add to /etc/sysctl.conf only if not present
-    if [[ $ipv4_forward_exists -eq 0 ]]; then
+    # Add to /etc/sysctl.conf if not present as active (uncommented) lines
+    if [[ $ipv4_forward_active -eq 0 ]]; then
         echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
         echo "Added net.ipv4.ip_forward=1 to /etc/sysctl.conf"
-        settings_added=true
+        settings_modified=true
     else
-        echo "net.ipv4.ip_forward=1 already exists in /etc/sysctl.conf, skipping."
+        echo "net.ipv4.ip_forward=1 already active in /etc/sysctl.conf, skipping."
     fi
 
-    if [[ $ipv6_forward_exists -eq 0 ]]; then
+    if [[ $ipv6_forward_active -eq 0 ]]; then
         echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
         echo "Added net.ipv6.conf.all.forwarding=1 to /etc/sysctl.conf"
-        settings_added=true
+        settings_modified=true
     else
-        echo "net.ipv6.conf.all.forwarding=1 already exists in /etc/sysctl.conf, skipping."
+        echo "net.ipv6.conf.all.forwarding=1 already active in /etc/sysctl.conf, skipping."
     fi
 
-    # Only add rollback action if we modified sysctl.conf, and use a custom rollback
-    if [[ "$settings_added" == "true" ]]; then
-        rollback_actions+=("sed -i '/^net\.ipv4\.ip_forward\s*=/d; /^net\.ipv6\.conf\.all\.forwarding\s*=/d' /etc/sysctl.conf && cat \"$sysctl_backup\" >> /etc/sysctl.conf && echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf && echo 'net.ipv6.conf.all.forwarding=1' >> /etc/sysctl.conf && sysctl -p")
-    else
-        rollback_actions+=("mv \"$sysctl_backup\" /etc/sysctl.conf && sysctl -p")
-    fi
+    # Custom rollback to ensure settings remain active (uncommented) as =1
+    rollback_actions+=("sed -i '/^#*net\.ipv4\.ip_forward\s*=/d; /^#*net\.ipv6\.conf\.all\.forwarding\s*=/d' /etc/sysctl.conf && cat \"$sysctl_backup\" >> /etc/sysctl.conf && echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf && echo 'net.ipv6.conf.all.forwarding=1' >> /etc/sysctl.conf && sysctl -p")
 
     configure_firewall "$port" "$vpn_inet_subnet" "$vpn_inet6_subnet"
 
