@@ -676,14 +676,41 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
 
     sysctl_backup="/etc/sysctl.conf.backup-$(date +%F-%T)"
     cp /etc/sysctl.conf "$sysctl_backup"
-    rollback_actions+=("mv \"$sysctl_backup\" /etc/sysctl.conf && sysctl -p")
 
-    configure_firewall "$port" "$vpn_inet_subnet" "$vpn_inet6_subnet"
+    # Check if sysctl settings already exist
+    ipv4_forward_exists=$(grep -c "^net\.ipv4\.ip_forward\s*=\s*1" /etc/sysctl.conf)
+    ipv6_forward_exists=$(grep -c "^net\.ipv6\.conf\.all\.forwarding\s*=\s*1" /etc/sysctl.conf)
+    settings_added=false
 
+    # Apply sysctl settings at runtime
     sysctl -w net.ipv4.ip_forward=1
     sysctl -w net.ipv6.conf.all.forwarding=1
-    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-    echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
+
+    # Add to /etc/sysctl.conf only if not present
+    if [[ $ipv4_forward_exists -eq 0 ]]; then
+        echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+        echo "Added net.ipv4.ip_forward=1 to /etc/sysctl.conf"
+        settings_added=true
+    else
+        echo "net.ipv4.ip_forward=1 already exists in /etc/sysctl.conf, skipping."
+    fi
+
+    if [[ $ipv6_forward_exists -eq 0 ]]; then
+        echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
+        echo "Added net.ipv6.conf.all.forwarding=1 to /etc/sysctl.conf"
+        settings_added=true
+    else
+        echo "net.ipv6.conf.all.forwarding=1 already exists in /etc/sysctl.conf, skipping."
+    fi
+
+    # Only add rollback action if we modified sysctl.conf, and use a custom rollback
+    if [[ "$settings_added" == "true" ]]; then
+        rollback_actions+=("sed -i '/^net\.ipv4\.ip_forward\s*=/d; /^net\.ipv6\.conf\.all\.forwarding\s*=/d' /etc/sysctl.conf && cat \"$sysctl_backup\" >> /etc/sysctl.conf && echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf && echo 'net.ipv6.conf.all.forwarding=1' >> /etc/sysctl.conf && sysctl -p")
+    else
+        rollback_actions+=("mv \"$sysctl_backup\" /etc/sysctl.conf && sysctl -p")
+    fi
+
+    configure_firewall "$port" "$vpn_inet_subnet" "$vpn_inet6_subnet"
 
     echo "Activating WireGuard interface..."
     if systemctl enable --now wg-quick@${interface_name}; then
