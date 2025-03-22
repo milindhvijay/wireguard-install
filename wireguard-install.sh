@@ -22,6 +22,9 @@ fi
 # Array to store rollback actions
 declare -a rollback_actions=()
 
+# Variable to store sysctl backup file name
+sysctl_backup=""
+
 # Rollback function to undo changes on failure
 rollback_on_failure() {
     echo "Error detected. Rolling back changes..."
@@ -138,7 +141,7 @@ generate_full_configs() {
     mtu=$(yq e '.local_peer.mtu' config.yaml)
     [[ "$mtu" == "null" || -z "$mtu" ]] && mtu=1420
     public_endpoint=$(yq e '.local_peer.public_endpoint' config.yaml)
-    interface_name=$(yq e '.local_peer.interface_name' config.yaml)
+    # Use the global interface_name
     [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
     inet_enabled=$(yq e '.local_peer.inet.enabled' config.yaml)
     server_inet=$(yq e '.local_peer.inet.gateway' config.yaml)
@@ -287,7 +290,7 @@ generate_client_configs() {
     fi
 
     port=$(yq e '.local_peer.port' config.yaml)
-    interface_name=$(yq e '.local_peer.interface_name' config.yaml)
+    # Use the global interface_name
     [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
     inet_enabled=$(yq e '.local_peer.inet.enabled' config.yaml)
     server_inet=$(yq e '.local_peer.inet.gateway' config.yaml)
@@ -587,8 +590,20 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     echo "Installing WireGuard and other dependencies..."
     if [[ "$os" == "ubuntu" || "$os" == "debian" ]]; then
         apt update
-        apt install -y wireguard qrencode nftables ipcalc
-        rollback_actions+=("apt remove -y wireguard qrencode nftables ipcalc")
+
+        # Ensure nftables is installed (but don't remove it in rollback)
+        if dpkg -l | grep -q '^ii\s*nftables\s'; then
+            echo "nftables is already installed."
+        else
+            echo "nftables is not installed, installing it now..."
+            apt install -y nftables
+            # We do NOT add nftables to rollback removal
+        fi
+
+        # Install other required packages
+        apt install -y wireguard qrencode ipcalc
+        rollback_actions+=("apt remove -y wireguard qrencode ipcalc")
+
         if ! command -v ipcalc &>/dev/null; then
             echo "Error: Failed to install 'ipcalc'. Please install it manually with 'apt install ipcalc'."
             exit 1
@@ -659,9 +674,9 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     echo
     echo "WireGuard installation is ready to begin."
 
-    # Backup sysctl.conf before modification
-    cp /etc/sysctl.conf /etc/sysctl.conf.backup-$(date +%F-%T)
-    rollback_actions+=("mv /etc/sysctl.conf.backup-$(date +%F-%T) /etc/sysctl.conf && sysctl -p")
+    sysctl_backup="/etc/sysctl.conf.backup-$(date +%F-%T)"
+    cp /etc/sysctl.conf "$sysctl_backup"
+    rollback_actions+=("mv \"$sysctl_backup\" /etc/sysctl.conf && sysctl -p")
 
     configure_firewall "$port" "$vpn_inet_subnet" "$vpn_inet6_subnet"
 
@@ -708,7 +723,6 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
         echo "No client configuration files found in $(dirname "$0")/wireguard-configs/."
     fi
 
-    # If we reach here, the first run succeeded; disable the trap
     trap - ERR
 else
     echo "WireGuard is already installed."
@@ -731,7 +745,7 @@ else
             fi
 
             port=$(yq e '.local_peer.port' config.yaml)
-            interface_name=$(yq e '.local_peer.interface_name' config.yaml)
+            # Use the global interface_name
             [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
             inet_enabled=$(yq e '.local_peer.inet.enabled' config.yaml)
             server_inet=$(yq e '.local_peer.inet.gateway' config.yaml)
@@ -815,7 +829,8 @@ else
                                 if (keep) { print buffer }
                                 in_peer = 0; buffer = ""; next
                             }
-                            in_peer { buffer = buffer $0 "\n"; next }
+                            in_peer { buffer = buffer $0 "\n"; next
+                            }
                             { print $0 }
                             END { if (in_peer && keep) { print buffer } }
                             ' "/etc/wireguard/${interface_name}.conf" > "$temp_file"
@@ -1021,7 +1036,7 @@ else
                 exit 1
             fi
 
-            interface_name=$(yq e '.local_peer.interface_name' config.yaml)
+            # Use the global interface_name
             [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
             number_of_clients=$(yq e '.remote_peer | length' config.yaml)
 
@@ -1137,7 +1152,7 @@ else
             ;;
 
         3)
-            interface_name=$(yq e '.local_peer.interface_name' config.yaml)
+            # Use the global interface_name
             [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
             systemctl disable --now wg-quick@"$interface_name"
 
