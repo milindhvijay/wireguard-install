@@ -665,10 +665,10 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
 
     configure_firewall "$port" "$vpn_inet_subnet" "$vpn_inet6_subnet"
 
-    sysctl -w net.inet.ip_forward=1
-    sysctl -w net.inet6.conf.all.forwarding=1
-    echo "net.inet.ip_forward=1" >> /etc/sysctl.conf
-    echo "net.inet6.conf.all.forwarding=1" >> /etc/sysctl.conf
+    sysctl -w net.ipv4.ip_forward=1
+    sysctl -w net.ipv6.conf.all.forwarding=1
+    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+    echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
 
     echo "Activating WireGuard interface..."
     if systemctl enable --now wg-quick@${interface_name}; then
