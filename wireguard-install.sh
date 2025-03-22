@@ -19,35 +19,6 @@ else
     exit 1
 fi
 
-calculate_inet6_subnet() {
-    local ip="$1"
-    local mask="$2"
-
-    # Combine IP and mask for netcalc
-    local cidr_ip="${ip}/${mask}"
-
-    # Get the network address from netcalc
-    local network=$(netcalc -n "$cidr_ip" | grep -oP 'Network\s*:\s*\K[0-9a-f:]+/\d+')
-    if [[ -z "$network" ]]; then
-        echo "Error: Failed to calculate inet6 subnet using netcalc for $cidr_ip." >&2
-        exit 1
-    fi
-
-    # Extract the IP part without the mask
-    local network_ip=$(echo "$network" | cut -d '/' -f 1)
-
-    # Compress the inet6 address
-    # Remove leading zeros in each hextet
-    network_ip=$(echo "$network_ip" | sed -E 's/(^|:)0+([0-9a-f])/\1\2/g')
-    # Replace the longest sequence of zero hextets with ::
-    network_ip=$(echo "$network_ip" | sed -E 's/(^|:)(0(:|$)){2,}/::/')
-    # Ensure there are no triple colons
-    network_ip=$(echo "$network_ip" | sed 's/:::/::/')
-
-    # Append the original mask
-    echo "${network_ip}/${mask}"
-}
-
 is_inet_in_use() {
     local ip="$1"
     local used_ips=("${@:2}")
@@ -226,7 +197,6 @@ EOF
         client_allowed_ips=$(yq e ".remote_peer[$i].allowed_ips" config.yaml)
         client_persistent_keepalive=$(yq e ".remote_peer[$i].persistent_keepalive" config.yaml)
 
-        # Always assign new inet based on current gateway
         if [[ "$inet_enabled" == "true" ]]; then
             client_inet=$(find_next_inet "$base_inet" "$server_inet_mask" "${used_inets[@]}")
             if [[ $? -ne 0 ]]; then
@@ -237,7 +207,6 @@ EOF
             yq e -i ".remote_peer[$i].inet_address = \"$client_inet\"" config.yaml.tmp
         fi
 
-        # Always assign new inet6 based on current gateway
         if [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
             client_inet6=$(find_next_inet6 "$base_inet6" "$server_inet6_mask" "${used_inet6s[@]}")
             if [[ $? -ne 0 ]]; then
@@ -311,7 +280,6 @@ generate_client_configs() {
     server_inet6=$(yq e '.local_peer.inet6.gateway' config.yaml)
     server_inet6_ip=$(echo "$server_inet6" | cut -d '/' -f 1)
     server_inet6_mask=$(echo "$server_inet6" | cut -d '/' -f 2)
-    # Remove initial vpn_inet6_subnet assignment here
     base_inet6=$(echo "$server_inet6_ip" | sed 's/:[0-9a-f]*$//')
     server_public_key=$(wg show "$interface_name" public-key)
 
@@ -482,8 +450,6 @@ configure_firewall() {
     local inet_snat_ip=$(yq e '.local_peer.inet.nat44_public_IP' config.yaml)
     local inet6_snat_ip=$(yq e '.local_peer.inet6.nat66_public_IP' config.yaml)
 
-    echo "Debug: vpn_inet6_subnet in configure_firewall: $vpn_inet6_subnet"
-
     if [[ -z "$host_interface" || "$host_interface" == "null" ]]; then
         echo "Error: host_interface is not set in config.yaml."
         return 1
@@ -550,24 +516,18 @@ $(for rule in "${nat_rules[@]}"; do echo "        $rule;"; done)
 EOF
 )
 
-    # Ensure /etc/nftables directory exists
     mkdir -p /etc/nftables
-
-    # Define the target file
     local nft_file="/etc/nftables/wg.nft"
 
-    # If wg.nft exists, back it up
     if [[ -f "$nft_file" && -s "$nft_file" ]]; then
         cp "$nft_file" "${nft_file}.backup-$(date +%F-%T)"
     fi
 
-# Write the new configuration to wg.nft
     echo '#!/usr/sbin/nft -f' > "$nft_file"
     echo "" >> "$nft_file"
     echo "$wireguard_table" >> "$nft_file"
     chmod 600 "$nft_file"
 
-    # Apply the configuration directly and restart nftables
     if ! nft -f "$nft_file"; then
         echo "Error: Failed to apply nftables configuration from $nft_file. Restoring backup if available."
         if [[ -f "${nft_file}.backup-$(date +%F-%T)" ]]; then
@@ -578,7 +538,6 @@ EOF
     fi
 
     systemctl restart nftables
-
     echo "Firewall rules for WireGuard have been configured in $nft_file."
     return 0
 }
@@ -586,10 +545,7 @@ EOF
 clear_firewall_rules() {
     local nft_file="/etc/nftables/wg.nft"
 
-    # Remove the wireguard table from the running configuration
     nft delete table inet wireguard 2>/dev/null || echo "No WireGuard table found in running config, skipping."
-
-    # Remove the wg.nft file
     if [[ -f "$nft_file" ]]; then
         rm -f "$nft_file"
         echo "Removed WireGuard nftables configuration file: $nft_file"
@@ -597,7 +553,6 @@ clear_firewall_rules() {
         echo "No $nft_file file found, skipping file removal."
     fi
 
-    # Restart nftables service
     systemctl restart nftables
 }
 
@@ -607,19 +562,11 @@ interface_name=$(yq e '.local_peer.interface_name' config.yaml 2>/dev/null || ec
 if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     echo "Installing WireGuard and other dependencies..."
     if [[ "$os" == "ubuntu" || "$os" == "debian" ]]; then
-        if ! command -v netcalc &>/dev/null; then
-            echo "'netcalc' not found, adding repository..."
-            curl -sS https://deb.troglobit.com/pubkey.gpg | tee /etc/apt/trusted.gpg.d/troglobit.asc >/dev/null
-                    echo "deb [arch=amd64] https://deb.troglobit.com/debian stable main" | tee /etc/apt/sources.list.d/troglobit.list >/dev/null
-        fi
-        apt-get update
-        apt-get install -y wireguard qrencode nftables
-        if ! command -v netcalc &>/dev/null; then
-            apt-get install -y netcalc
-            if ! command -v netcalc &>/dev/null; then
-                echo "Error: Failed to install 'netcalc'. Please install it manually."
-                exit 1
-            fi
+        apt update
+        apt install -y wireguard qrencode nftables ipcalc
+        if ! command -v ipcalc &>/dev/null; then
+            echo "Error: Failed to install 'ipcalc'. Please install it manually."
+            exit 1
         fi
     else
         echo "Error: Unsupported OS."
@@ -632,18 +579,6 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
         chmod +x /usr/bin/yq
         if ! command -v yq &>/dev/null; then
             echo "Error: Failed to install 'yq'. Please install it manually."
-            exit 1
-        fi
-    fi
-
-    if ! command -v netcalc &>/dev/null; then
-        echo "'netcalc' not found, installing it automatically..."
-        curl -sS https://deb.troglobit.com/pubkey.gpg | tee /etc/apt/trusted.gpg.d/troglobit.asc >/dev/null
-        echo "deb [arch=amd64] https://deb.troglobit.com/debian stable main" | tee /etc/apt/sources.list.d/troglobit.list >/dev/null
-        apt-get update
-        apt-get install -y netcalc
-        if ! command -v netcalc &>/dev/null; then
-            echo "Error: Failed to install 'netcalc'. Please install it manually."
             exit 1
         fi
     fi
@@ -669,18 +604,14 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     inet_enabled=$(yq e '.local_peer.inet.enabled' config.yaml)
     inet6_enabled=$(yq e '.local_peer.inet6.enabled' config.yaml)
     server_inet=$(yq e '.local_peer.inet.gateway' config.yaml)
-    server_inet_ip=$(echo "$server_inet" | cut -d '/' -f 1)
-    server_inet6_mask=$(echo "$server_inet" | cut -d '/' -f 2)
-    base_inet=$(echo "$server_inet_ip" | cut -d '.' -f 1-3)
     server_inet6=$(yq e '.local_peer.inet6.gateway' config.yaml)
-    server_inet6_ip=$(echo "$server_inet6" | cut -d '/' -f 1)
-    server_inet6_mask=$(echo "$server_inet6" | cut -d '/' -f 2)
+    server_inet6_mask=$(yq e '.local_peer.inet6.gateway' config.yaml | cut -d '/' -f 2)
     port=$(yq e '.local_peer.port' config.yaml)
 
     if [[ "$inet_enabled" == "true" ]]; then
-        vpn_inet_subnet=$(netcalc -n "$server_inet" | grep -oP 'Network\s*:\s*\K[\d.]+/\d+')
+        vpn_inet_subnet=$(ipcalc "$server_inet" | grep -oP 'Network:\s*\K[\d.]+/\d+')
         if [[ -z "$vpn_inet_subnet" ]]; then
-            echo "Error: Failed to calculate inet subnet using netcalc for $server_inet."
+            echo "Error: Failed to calculate inet subnet using ipcalc for $server_inet."
             exit 1
         fi
     fi
@@ -690,9 +621,11 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
             echo "Error: Invalid prefix length. Must be between 0 and 128."
             exit 1
         fi
-
-        vpn_inet6_subnet=$(calculate_inet6_subnet "$server_inet6_ip" "$server_inet6_mask")
-        echo "Debug: Calculated vpn_inet6_subnet: $vpn_inet6_subnet"
+        vpn_inet6_subnet=$(ipcalc "$server_inet6" | grep -oP 'Prefix:\s*\K[0-9a-f:]+/\d+')
+        if [[ -z "$vpn_inet6_subnet" ]]; then
+            echo "Error: Failed to calculate inet6 subnet using ipcalc for $server_inet6."
+            exit 1
+        fi
     fi
 
     echo
@@ -770,22 +703,26 @@ else
             base_inet=$(echo "$server_inet_ip" | cut -d '.' -f 1-3)
             inet6_enabled=$(yq e '.local_peer.inet6.enabled' config.yaml)
             server_inet6=$(yq e '.local_peer.inet6.gateway' config.yaml)
-            server_inet6_ip=$(echo "$server_inet6" | cut -d '/' -f 1)
             server_inet6_mask=$(echo "$server_inet6" | cut -d '/' -f 2)
+
             if [[ "$inet_enabled" == "true" ]]; then
-                vpn_inet_subnet=$(netcalc -n "$server_inet" | grep -oP 'Network\s*:\s*\K[\d.]+/\d+')
+                vpn_inet_subnet=$(ipcalc "$server_inet" | grep -oP 'Network:\s*\K[\d.]+/\d+')
                 if [[ -z "$vpn_inet_subnet" ]]; then
-                    echo "Error: Failed to calculate inet subnet using netcalc for $server_inet."
+                    echo "Error: Failed to calculate inet subnet using ipcalc for $server_inet."
                     exit 1
                 fi
             fi
+
             if [[ "$inet6_enabled" == "true" ]]; then
                 if [[ $server_inet6_mask -lt 0 || $server_inet6_mask -gt 128 ]]; then
                     echo "Error: Invalid prefix length. Must be between 0 and 128."
                     exit 1
                 fi
-                vpn_inet6_subnet=$(calculate_inet6_subnet "$server_inet6_ip" "$server_inet6_mask")
-                echo "Debug: Calculated vpn_inet6_subnet: $vpn_inet6_subnet"
+                vpn_inet6_subnet=$(ipcalc "$server_inet6" | grep -oP 'Prefix:\s*\K[0-9a-f:]+/\d+')
+                if [[ -z "$vpn_inet6_subnet" ]]; then
+                    echo "Error: Failed to calculate inet6 subnet using ipcalc for $server_inet6."
+                    exit 1
+                fi
             fi
 
             if [[ -f "$(dirname "$0")/config.yaml.backup" ]]; then
@@ -807,7 +744,6 @@ else
                     fi
                 fi
 
-                # Detect and clean up removed clients
                 old_clients=$(yq e '.remote_peer | length' "$(dirname "$0")/config.yaml.backup")
                 new_clients=$(yq e '.remote_peer | length' config.yaml)
                 declare -A current_names
@@ -870,7 +806,6 @@ else
                     fi
                 done
 
-                # Check for gateway changes
                 old_server_inet=$(yq e '.local_peer.inet.gateway' "$(dirname "$0")/config.yaml.backup")
                 old_server_inet6=$(yq e '.local_peer.inet6.gateway' "$(dirname "$0")/config.yaml.backup")
                 gateway_changed=false
@@ -1079,17 +1014,14 @@ else
             client_name=$(yq e ".remote_peer[$index].name" config.yaml)
             echo "Deleting client: $client_name..."
 
-            # Define paths
             key_dir="$(dirname "$0")/keys/${client_name}-${interface_name}"
             server_conf="/etc/wireguard/${interface_name}.conf"
 
-            # Get public key before any deletion
             client_public_key=""
             if [[ -f "$key_dir/${client_name}-${interface_name}-public.key" ]]; then
                 client_public_key=$(cat "$key_dir/${client_name}-${interface_name}-public.key")
             fi
 
-            # Remove from server .conf file first (adapted from option 1)
             if [[ -n "$client_public_key" && -f "$server_conf" ]]; then
                 temp_file=$(mktemp)
                 awk -v pubkey="$client_public_key" '
@@ -1119,13 +1051,11 @@ else
                 echo "Warning: $server_conf not found; skipping server config update."
             fi
 
-            # Remove from YAML
             cp config.yaml config.yaml.tmp
             yq e -i "del(.remote_peer[$index])" config.yaml.tmp
             mv config.yaml.tmp config.yaml
             echo "Removed $client_name from config.yaml."
 
-            # Now perform cleanup
             if [[ -d "$key_dir" ]]; then
                 rm -rf "$key_dir"
                 echo "Removed key directory: $key_dir"
@@ -1143,11 +1073,9 @@ else
                 echo "Removed QR code: $qr_file"
             fi
 
-            # Update backup
             cp config.yaml "$(dirname "$0")/config.yaml.backup"
             chmod 600 "$(dirname "$0")/config.yaml.backup"
 
-            # Restart WireGuard to apply changes
             echo "Restarting WireGuard service to apply changes..."
             if systemctl restart wg-quick@"$interface_name"; then
                 if ! wg show "$interface_name" >/dev/null 2>&1; then
@@ -1176,7 +1104,6 @@ else
             [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
             systemctl disable --now wg-quick@"$interface_name"
 
-            # Clear firewall rules using the updated function
             clear_firewall_rules
 
             if [[ -d "$(dirname "$0")/wireguard-configs" ]]; then
@@ -1189,35 +1116,7 @@ else
             fi
 
             rm -rf /etc/wireguard
-            apt-get remove -y wireguard wireguard-tools
-            echo "WireGuard removed."
-            ;;
-
-        3)
-            interface_name=$(yq e '.local_peer.interface_name' config.yaml)
-            [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
-            systemctl disable --now wg-quick@"$interface_name"
-
-            # Clear firewall rules
-            nft delete table inet wireguard 2>/dev/null || echo "No WireGuard table found in running config, skipping."
-            nft_file="/etc/nftables/wg.nft"
-            if [[ -f "$nft_file" ]]; then
-                rm -f "$nft_file"
-                echo "Removed WireGuard nftables configuration file: $nft_file"
-            fi
-            systemctl restart nftables
-
-            if [[ -d "$(dirname "$0")/wireguard-configs" ]]; then
-                rm -rf "$(dirname "$0")/wireguard-configs"
-                echo "Removed client configuration directory (including QR codes): $(dirname "$0")/wireguard-configs"
-            fi
-            if [[ -d "$(dirname "$0")/keys" ]]; then
-                rm -rf "$(dirname "$0")/keys"
-                echo "Removed keys directory: $(dirname "$0")/keys"
-            fi
-
-            rm -rf /etc/wireguard
-            apt-get remove -y wireguard wireguard-tools
+            apt remove -y wireguard wireguard-tools
             echo "WireGuard removed."
             ;;
 
