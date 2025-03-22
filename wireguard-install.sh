@@ -602,10 +602,10 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
 
         # Install other required packages
         apt install -y wireguard qrencode ipcalc
-        rollback_actions+=("apt remove -y wireguard qrencode ipcalc")
+        rollback_actions+=("apt remove -y wireguard wireguard-tools qrencode ipcalc --purge")
 
         if ! command -v ipcalc &>/dev/null; then
-            echo "Error: Failed to install 'ipcalc'. Please install it manually with 'apt install ipcalc'."
+            echo "Error: Failed to install 'ipcalc'. Please install it manually."
             exit 1
         fi
     else
@@ -1168,7 +1168,8 @@ else
             fi
 
             rm -rf /etc/wireguard
-            apt remove -y wireguard wireguard-tools
+            apt remove -y wireguard wireguard-tools qrencode ipcalc --purge
+            rm -f /usr/bin/yq
             echo "WireGuard removed."
             ;;
 
