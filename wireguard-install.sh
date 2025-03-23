@@ -676,6 +676,8 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     echo
     echo "WireGuard installation is ready to begin."
 
+    echo "WireGuard installation is ready to begin."
+
     # Backup sysctl.conf
     sysctl_backup="/etc/sysctl.conf.backup-$(date +%F-%T)"
     cp /etc/sysctl.conf "$sysctl_backup" || {
@@ -730,11 +732,11 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
         echo "net.ipv4.ip_forward=1 already active, skipping"
     fi
 
-    # Handle IPv6 forwarding
+    # Handle IPv6 forwarding (corrected sed command)
     if [[ $ipv6_forward_active -eq 0 ]]; then
         if grep -q "^#\s*net\.ipv6\.conf\.all\.forwarding\s*=\s*1" /etc/sysctl.conf; then
             echo "Found commented net.ipv6.conf.all.forwarding=1, attempting to uncomment..."
-            if ! sed -i "s|^#\s*net\.ipv6\.conf\.all\.forwarding\s*=\s*1|net.ipv4.ip_forward=1|" /etc/sysctl.conf; then
+            if ! sed -i "s|^#\s*net\.ipv6\.conf\.all\.forwarding\s*=\s*1|net.ipv6.conf.all.forwarding=1|" /etc/sysctl.conf; then
                 echo "Error: Failed to uncomment net.ipv6.conf.all.forwarding=1"
                 rollback_on_failure
             fi
@@ -761,6 +763,8 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     # Reload sysctl to apply file changes
     if ! sysctl -p /etc/sysctl.conf >/dev/null 2>&1; then
         echo "Warning: Failed to reload sysctl.conf, but continuing..."
+    else
+        echo "Successfully reloaded sysctl.conf"
     fi
 
     configure_firewall "$port" "$vpn_inet_subnet" "$vpn_inet6_subnet"
