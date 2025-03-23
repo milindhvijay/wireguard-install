@@ -10,6 +10,31 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
+if ! command -v yq &>/dev/null; then
+    echo "'yq' not found, installing it automatically..."
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64)
+            wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq && \
+            chmod +x /usr/bin/yq
+            ;;
+        aarch64)
+            wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_arm64 -O /usr/bin/yq && \
+            chmod +x /usr/bin/yq
+            ;;
+        *)
+            echo "Error: Unsupported architecture '$ARCH'. Supported architectures are 'x86_64' (AMD64) and 'aarch64' (ARM64)."
+            echo "Please install 'yq' manually for your system."
+            exit 1
+            ;;
+    esac
+    rollback_actions+=("rm -f /usr/bin/yq")
+    if ! command -v yq &>/dev/null; then
+        echo "Error: Failed to install 'yq'. Please install it manually."
+        exit 1
+    fi
+fi
+
 if [[ -f /etc/os-release ]]; then
     source /etc/os-release
     os=${ID}
@@ -17,17 +42,6 @@ if [[ -f /etc/os-release ]]; then
 else
     echo "Error: Cannot detect operating system."
     exit 1
-fi
-
-if ! command -v yq &>/dev/null; then
-    echo "'yq' not found, installing it automatically..."
-    wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq &&\
-    chmod +x /usr/bin/yq
-    rollback_actions+=("rm -f /usr/bin/yq")
-    if ! command -v yq &>/dev/null; then
-        echo "Error: Failed to install 'yq'. Please install it manually."
-        exit 1
-    fi
 fi
 
 # Set interface_name after yq is available
@@ -706,7 +720,6 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     ipv6_forward_active=$(grep -c "^net\.ipv6\.conf\.all\.forwarding\s*=\s*1" /etc/sysctl.conf || true)
     set -e  # Re-enable exit-on-error
 
-    echo "ipv4_forward_active=$ipv4_forward_active, ipv6_forward_active=$ipv6_forward_active"
     settings_added_by_script=false
 
     # Handle IPv4 forwarding
