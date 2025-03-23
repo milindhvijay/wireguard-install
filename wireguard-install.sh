@@ -682,69 +682,85 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
         echo "Error: Failed to backup /etc/sysctl.conf to $sysctl_backup"
         rollback_on_failure
     }
+    rollback_actions+=("mv \"$sysctl_backup\" /etc/sysctl.conf")
 
-    # Apply settings at runtime
+    # Apply runtime settings with explicit checks
     if ! sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1; then
         echo "Error: Failed to set net.ipv4.ip_forward=1 at runtime"
         rollback_on_failure
+    else
+        echo "Successfully set net.ipv4.ip_forward=1 at runtime"
     fi
     if ! sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1; then
         echo "Error: Failed to set net.ipv6.conf.all.forwarding=1 at runtime"
         rollback_on_failure
+    else
+        echo "Successfully set net.ipv6.conf.all.forwarding=1 at runtime"
     fi
 
-    # Check for uncommented active settings
-    ipv4_forward_active=$(grep -c "^net\.ipv4\.ip_forward\s*=\s*1" /etc/sysctl.conf)
-    ipv6_forward_active=$(grep -c "^net\.ipv6\.conf\.all\.forwarding\s*=\s*1" /etc/sysctl.conf)
+    # Check file state without triggering ERR trap
+    set +e  # Disable exit-on-error for grep
+    ipv4_forward_active=$(grep -c "^net\.ipv4\.ip_forward\s*=\s*1" /etc/sysctl.conf || true)
+    ipv6_forward_active=$(grep -c "^net\.ipv6\.conf\.all\.forwarding\s*=\s*1" /etc/sysctl.conf || true)
+    set -e  # Re-enable exit-on-error
 
-    # Track if we modified settings
+    echo "ipv4_forward_active=$ipv4_forward_active, ipv6_forward_active=$ipv6_forward_active"
     settings_added_by_script=false
 
     # Handle IPv4 forwarding
     if [[ $ipv4_forward_active -eq 0 ]]; then
-        if grep -q "^#*net\.ipv4\.ip_forward\s*=\s*1" /etc/sysctl.conf; then
-            sed -i "s/^#\s*net\.ipv4\.ip_forward\s*=\s*1/net.ipv4.ip_forward=1/" /etc/sysctl.conf || {
-                echo "Error: Failed to uncomment net.ipv4.ip_forward=1 in /etc/sysctl.conf"
+        if grep -q "^#\s*net\.ipv4\.ip_forward\s*=\s*1" /etc/sysctl.conf; then
+            echo "Found commented net.ipv4.ip_forward=1, attempting to uncomment..."
+            if ! sed -i "s|^#\s*net\.ipv4\.ip_forward\s*=\s*1|net.ipv4.ip_forward=1|" /etc/sysctl.conf; then
+                echo "Error: Failed to uncomment net.ipv4.ip_forward=1"
                 rollback_on_failure
-            }
-            echo "Uncommented net.ipv4.ip_forward=1 in /etc/sysctl.conf"
+            fi
+            echo "Uncommented net.ipv4.ip_forward=1"
             settings_added_by_script=true
         else
-            echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf || {
-                echo "Error: Failed to append net.ipv4.ip_forward=1 to /etc/sysctl.conf"
+            echo "No net.ipv4.ip_forward=1 found, appending..."
+            if ! echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf; then
+                echo "Error: Failed to append net.ipv4.ip_forward=1"
                 rollback_on_failure
-            }
-            echo "Added net.ipv4.ip_forward=1 to /etc/sysctl.conf"
+            fi
+            echo "Added net.ipv4.ip_forward=1"
             settings_added_by_script=true
         fi
     else
-        echo "net.ipv4.ip_forward=1 already active in /etc/sysctl.conf, skipping."
+        echo "net.ipv4.ip_forward=1 already active, skipping"
     fi
 
     # Handle IPv6 forwarding
     if [[ $ipv6_forward_active -eq 0 ]]; then
-        if grep -q "^#*net\.ipv6\.conf\.all\.forwarding\s*=\s*1" /etc/sysctl.conf; then
-            sed -i "s/^#\s*net\.ipv6\.conf\.all\.forwarding\s*=\s*1/net.ipv6.conf.all.forwarding=1/" /etc/sysctl.conf || {
-                echo "Error: Failed to uncomment net.ipv6.conf.all.forwarding=1 in /etc/sysctl.conf"
+        if grep -q "^#\s*net\.ipv6\.conf\.all\.forwarding\s*=\s*1" /etc/sysctl.conf; then
+            echo "Found commented net.ipv6.conf.all.forwarding=1, attempting to uncomment..."
+            if ! sed -i "s|^#\s*net\.ipv6\.conf\.all\.forwarding\s*=\s*1|net.ipv4.ip_forward=1|" /etc/sysctl.conf; then
+                echo "Error: Failed to uncomment net.ipv6.conf.all.forwarding=1"
                 rollback_on_failure
-            }
-            echo "Uncommented net.ipv6.conf.all.forwarding=1 in /etc/sysctl.conf"
+            fi
+            echo "Uncommented net.ipv6.conf.all.forwarding=1"
             settings_added_by_script=true
         else
-            echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf || {
-                echo "Error: Failed to append net.ipv6.conf.all.forwarding=1 to /etc/sysctl.conf"
+            echo "No net.ipv6.conf.all.forwarding=1 found, appending..."
+            if ! echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf; then
+                echo "Error: Failed to append net.ipv6.conf.all.forwarding=1"
                 rollback_on_failure
-            }
-            echo "Added net.ipv6.conf.all.forwarding=1 to /etc/sysctl.conf"
+            fi
+            echo "Added net.ipv6.conf.all.forwarding=1"
             settings_added_by_script=true
         fi
     else
-        echo "net.ipv6.conf.all.forwarding=1 already active in /etc/sysctl.conf, skipping."
+        echo "net.ipv6.conf.all.forwarding=1 already active, skipping"
     fi
 
-    # Rollback only what we changed
+    # Add rollback action only if we modified the file
     if [[ "$settings_added_by_script" == "true" ]]; then
-        rollback_actions+=("sed -i 's/^net\.ipv4\.ip_forward\s*=\s*1/#net.ipv4.ip_forward=1/' /etc/sysctl.conf; sed -i 's/^net\.ipv6\.conf\.all\.forwarding\s*=\s*1/#net.ipv6.conf.all.forwarding=1/' /etc/sysctl.conf; sysctl -p || echo 'Warning: sysctl -p failed during rollback'")
+        rollback_actions+=("sed -i 's|^net\.ipv4\.ip_forward\s*=\s*1|#net.ipv4.ip_forward=1|' /etc/sysctl.conf; sed -i 's|^net\.ipv6\.conf\.all\.forwarding\s*=\s*1|#net.ipv6.conf.all.forwarding=1|' /etc/sysctl.conf; sysctl -p || echo 'Warning: sysctl -p failed during rollback'")
+    fi
+
+    # Reload sysctl to apply file changes
+    if ! sysctl -p /etc/sysctl.conf >/dev/null 2>&1; then
+        echo "Warning: Failed to reload sysctl.conf, but continuing..."
     fi
 
     configure_firewall "$port" "$vpn_inet_subnet" "$vpn_inet6_subnet"
