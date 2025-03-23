@@ -10,6 +10,8 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
+declare -a rollback_actions=()
+
 if ! command -v yq &>/dev/null; then
     echo "'yq' not found, installing it automatically..."
     ARCH=$(uname -m)
@@ -54,8 +56,6 @@ if [[ "$interface_name" == "null" || -z "$interface_name" ]]; then
     interface_name="wg0"
 fi
 
-# Array to store rollback actions
-declare -a rollback_actions=()
 sysctl_backup=""
 
 # Rollback function to undo changes on failure
@@ -820,8 +820,9 @@ else
     echo "Select an option:"
     echo "   1) Re-create server and client configurations from YAML"
     echo "   2) Remove a Client"
-    echo "   3) Remove WireGuard"
-    echo "   4) Exit"
+    echo "   3) Update yq"
+    echo "   4) Remove WireGuard"
+    echo "   5) Exit"
     read -p "Option: " option
 
     case $option in
@@ -1243,6 +1244,31 @@ else
             ;;
 
         3)
+            echo "Updating 'yq' to the latest version..."
+            ARCH=$(uname -m)
+            case "$ARCH" in
+                x86_64)
+                    wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq && \
+                    chmod +x /usr/bin/yq
+                    ;;
+                aarch64)
+                    wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_arm64 -O /usr/bin/yq && \
+                    chmod +x /usr/bin/yq
+                    ;;
+                *)
+                    echo "Error: Unsupported architecture '$ARCH'. Supported architectures are 'x86_64' (AMD64) and 'aarch64' (ARM64)."
+                    echo "Please install 'yq' manually for your system."
+                    exit 1
+                    ;;
+            esac
+            if ! command -v yq &>/dev/null; then
+                echo "Error: Failed to update 'yq'. Please install it manually."
+                exit 1
+            fi
+            echo "Successfully updated 'yq' to version: $(yq --version)"
+            ;;
+
+        4)
             # Use the global interface_name
             [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
             systemctl disable --now wg-quick@"$interface_name"
@@ -1263,7 +1289,7 @@ else
             rm -f /usr/bin/yq
             ;;
 
-        4)
+        5)
             exit 0
             ;;
         *)
