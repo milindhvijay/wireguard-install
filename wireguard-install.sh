@@ -1260,7 +1260,6 @@ else
             rm -rf /etc/wireguard
             apt remove -y wireguard wireguard-tools qrencode ipcalc --purge
             rm -f /usr/bin/yq
-            echo "WireGuard removed. Note: /etc/sysctl.conf settings (e.g., IP forwarding) were not modified."
             ;;
 
         4)
