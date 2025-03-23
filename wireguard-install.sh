@@ -674,37 +674,76 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     echo
     echo "WireGuard installation is ready to begin."
 
+    # Backup sysctl.conf
     sysctl_backup="/etc/sysctl.conf.backup-$(date +%F-%T)"
-    cp /etc/sysctl.conf "$sysctl_backup"
+    cp /etc/sysctl.conf "$sysctl_backup" || {
+        echo "Error: Failed to backup /etc/sysctl.conf to $sysctl_backup"
+        rollback_on_failure
+    }
 
-    # Check if sysctl settings already exist as uncommented lines
+    # Apply settings at runtime
+    if ! sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1; then
+        echo "Error: Failed to set net.ipv4.ip_forward=1 at runtime"
+        rollback_on_failure
+    fi
+    if ! sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1; then
+        echo "Error: Failed to set net.ipv6.conf.all.forwarding=1 at runtime"
+        rollback_on_failure
+    fi
+
+    # Check for uncommented active settings
     ipv4_forward_active=$(grep -c "^net\.ipv4\.ip_forward\s*=\s*1" /etc/sysctl.conf)
     ipv6_forward_active=$(grep -c "^net\.ipv6\.conf\.all\.forwarding\s*=\s*1" /etc/sysctl.conf)
-    settings_modified=false
 
-    # Apply sysctl settings at runtime
-    sysctl -w net.ipv4.ip_forward=1
-    sysctl -w net.ipv6.conf.all.forwarding=1
+    # Track if we modified settings
+    settings_added_by_script=false
 
-    # Add to /etc/sysctl.conf if not present as active (uncommented) lines
+    # Handle IPv4 forwarding
     if [[ $ipv4_forward_active -eq 0 ]]; then
-        echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-        echo "Added net.ipv4.ip_forward=1 to /etc/sysctl.conf"
-        settings_modified=true
+        if grep -q "^#*net\.ipv4\.ip_forward\s*=\s*1" /etc/sysctl.conf; then
+            sed -i "s/^#\s*net\.ipv4\.ip_forward\s*=\s*1/net.ipv4.ip_forward=1/" /etc/sysctl.conf || {
+                echo "Error: Failed to uncomment net.ipv4.ip_forward=1 in /etc/sysctl.conf"
+                rollback_on_failure
+            }
+            echo "Uncommented net.ipv4.ip_forward=1 in /etc/sysctl.conf"
+            settings_added_by_script=true
+        else
+            echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf || {
+                echo "Error: Failed to append net.ipv4.ip_forward=1 to /etc/sysctl.conf"
+                rollback_on_failure
+            }
+            echo "Added net.ipv4.ip_forward=1 to /etc/sysctl.conf"
+            settings_added_by_script=true
+        fi
     else
         echo "net.ipv4.ip_forward=1 already active in /etc/sysctl.conf, skipping."
     fi
 
+    # Handle IPv6 forwarding
     if [[ $ipv6_forward_active -eq 0 ]]; then
-        echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
-        echo "Added net.ipv6.conf.all.forwarding=1 to /etc/sysctl.conf"
-        settings_modified=true
+        if grep -q "^#*net\.ipv6\.conf\.all\.forwarding\s*=\s*1" /etc/sysctl.conf; then
+            sed -i "s/^#\s*net\.ipv6\.conf\.all\.forwarding\s*=\s*1/net.ipv6.conf.all.forwarding=1/" /etc/sysctl.conf || {
+                echo "Error: Failed to uncomment net.ipv6.conf.all.forwarding=1 in /etc/sysctl.conf"
+                rollback_on_failure
+            }
+            echo "Uncommented net.ipv6.conf.all.forwarding=1 in /etc/sysctl.conf"
+            settings_added_by_script=true
+        else
+            echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf || {
+                echo "Error: Failed to append net.ipv6.conf.all.forwarding=1 to /etc/sysctl.conf"
+                rollback_on_failure
+            }
+            echo "Added net.ipv6.conf.all.forwarding=1 to /etc/sysctl.conf"
+            settings_added_by_script=true
+        fi
     else
         echo "net.ipv6.conf.all.forwarding=1 already active in /etc/sysctl.conf, skipping."
     fi
 
-    # Custom rollback to ensure settings remain active (uncommented) as =1
-    rollback_actions+=("sed -i '/^#*net\.ipv4\.ip_forward\s*=/d; /^#*net\.ipv6\.conf\.all\.forwarding\s*=/d' /etc/sysctl.conf && cat \"$sysctl_backup\" >> /etc/sysctl.conf && echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf && echo 'net.ipv6.conf.all.forwarding=1' >> /etc/sysctl.conf && sysctl -p")
+    # Rollback only what we changed
+    if [[ "$settings_added_by_script" == "true" ]]; then
+        rollback_actions+=("sed -i 's/^net\.ipv4\.ip_forward\s*=\s*1/#net.ipv4.ip_forward=1/' /etc/sysctl.conf; sed -i 's/^net\.ipv6\.conf\.all\.forwarding\s*=\s*1/#net.ipv6.conf.all.forwarding=1/' /etc/sysctl.conf; sysctl -p || echo 'Warning: sysctl -p failed during rollback'")
+    fi
 
     configure_firewall "$port" "$vpn_inet_subnet" "$vpn_inet6_subnet"
 
@@ -1193,7 +1232,7 @@ else
             rm -rf /etc/wireguard
             apt remove -y wireguard wireguard-tools qrencode ipcalc --purge
             rm -f /usr/bin/yq
-            echo "WireGuard removed."
+            echo "WireGuard removed. Note: /etc/sysctl.conf settings (e.g., IP forwarding) were not modified."
             ;;
 
         4)
