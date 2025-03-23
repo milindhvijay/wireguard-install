@@ -682,8 +682,6 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     echo
     echo "WireGuard installation is ready to begin."
 
-    echo "WireGuard installation is ready to begin."
-
     # Backup sysctl.conf
     sysctl_backup="/etc/sysctl.conf.backup-$(date +%F-%T)"
     cp /etc/sysctl.conf "$sysctl_backup" || {
@@ -696,14 +694,10 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     if ! sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1; then
         echo "Error: Failed to set net.ipv4.ip_forward=1 at runtime"
         rollback_on_failure
-    else
-        echo "Successfully set net.ipv4.ip_forward=1 at runtime"
     fi
     if ! sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1; then
         echo "Error: Failed to set net.ipv6.conf.all.forwarding=1 at runtime"
         rollback_on_failure
-    else
-        echo "Successfully set net.ipv6.conf.all.forwarding=1 at runtime"
     fi
 
     # Check file state without triggering ERR trap
@@ -734,8 +728,6 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
             echo "Added net.ipv4.ip_forward=1"
             settings_added_by_script=true
         fi
-    else
-        echo "net.ipv4.ip_forward=1 already active, skipping"
     fi
 
     # Handle IPv6 forwarding (corrected sed command)
@@ -757,8 +749,6 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
             echo "Added net.ipv6.conf.all.forwarding=1"
             settings_added_by_script=true
         fi
-    else
-        echo "net.ipv6.conf.all.forwarding=1 already active, skipping"
     fi
 
     # Add rollback action only if we modified the file
@@ -769,8 +759,6 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     # Reload sysctl to apply file changes
     if ! sysctl -p /etc/sysctl.conf >/dev/null 2>&1; then
         echo "Warning: Failed to reload sysctl.conf, but continuing..."
-    else
-        echo "Successfully reloaded sysctl.conf"
     fi
 
     configure_firewall "$port" "$vpn_inet_subnet" "$vpn_inet6_subnet"
