@@ -1,7 +1,5 @@
 #!/bin/bash
 
-set -x
-
 if [ -z "$BASH_VERSION" ]; then
     echo "Error: This script must be run with Bash."
     exit 1
