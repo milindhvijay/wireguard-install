@@ -174,7 +174,6 @@ generate_full_configs() {
     mtu=$(yq e '.local_peer.mtu' config.yaml)
     [[ "$mtu" == "null" || -z "$mtu" ]] && mtu=1420
     public_endpoint=$(yq e '.local_peer.public_endpoint' config.yaml)
-    # Use the global interface_name
     [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
     inet_enabled=$(yq e '.local_peer.inet.enabled' config.yaml)
     server_inet=$(yq e '.local_peer.inet.gateway' config.yaml)
@@ -189,16 +188,11 @@ generate_full_configs() {
 
     cleanup_conflicting_interfaces "$server_inet_ip" "$server_inet6_ip" "$interface_name"
 
-    mkdir -p "$(dirname "$0")/keys"
-    rollback_actions+=("rm -rf \"$(dirname "$0")/keys\"")
     original_umask=$(umask)
     umask 077
 
-    wg genkey > "$(dirname "$0")/keys/server-${interface_name}-private.key"
-    server_private_key=$(cat "$(dirname "$0")/keys/server-${interface_name}-private.key")
-    echo "$server_private_key" | wg pubkey > "$(dirname "$0")/keys/server-${interface_name}-public.key"
-    server_public_key=$(cat "$(dirname "$0")/keys/server-${interface_name}-public.key")
-    chmod 600 "$(dirname "$0")/keys/server-${interface_name}-private.key" "$(dirname "$0")/keys/server-${interface_name}-public.key"
+    server_private_key=$(wg genkey)
+    server_public_key=$(echo "$server_private_key" | wg pubkey)
 
     cat << EOF > /etc/wireguard/"${interface_name}.conf"
 [Interface]
@@ -271,17 +265,9 @@ EOF
             yq e -i ".remote_peer[$i].inet6_address = \"$client_inet6\"" config.yaml.tmp
         fi
 
-        client_key_dir="$(dirname "$0")/keys/${client_name}-${interface_name}"
-        mkdir -p "$client_key_dir"
-        wg genkey > "$client_key_dir/${client_name}-${interface_name}-private.key"
-        client_private_key=$(cat "$client_key_dir/${client_name}-${interface_name}-private.key")
-        echo "$client_private_key" | wg pubkey > "$client_key_dir/${client_name}-${interface_name}-public.key"
-        client_public_key=$(cat "$client_key_dir/${client_name}-${interface_name}-public.key")
-        wg genpsk > "$client_key_dir/${client_name}-${interface_name}-psk.key"
-        psk=$(cat "$client_key_dir/${client_name}-${interface_name}-psk.key")
-        chmod 600 "$client_key_dir/${client_name}-${interface_name}-private.key" \
-                  "$client_key_dir/${client_name}-${interface_name}-public.key" \
-                  "$client_key_dir/${client_name}-${interface_name}-psk.key"
+        client_private_key=$(wg genkey)
+        client_public_key=$(echo "$client_private_key" | wg pubkey)
+        psk=$(wg genpsk)
 
         client_inet_ip=$(echo "$client_inet" | cut -d '/' -f 1)
         client_inet6_ip=$(echo "$client_inet6" | cut -d '/' -f 1)
@@ -323,7 +309,6 @@ generate_client_configs() {
     fi
 
     port=$(yq e '.local_peer.port' config.yaml)
-    # Use the global interface_name
     [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
     inet_enabled=$(yq e '.local_peer.inet.enabled' config.yaml)
     server_inet=$(yq e '.local_peer.inet.gateway' config.yaml)
@@ -358,7 +343,6 @@ generate_client_configs() {
     fi
 
     cp config.yaml config.yaml.tmp
-    mkdir -p "$(dirname "$0")/keys"
     mkdir -p "$(dirname "$0")/wireguard-configs"
     original_umask=$(umask)
     umask 077
@@ -406,17 +390,9 @@ generate_client_configs() {
             yq e -i ".remote_peer[$i].inet6_address = \"$client_inet6\"" config.yaml.tmp
         fi
 
-        client_key_dir="$(dirname "$0")/keys/${client_name}-${interface_name}"
-        mkdir -p "$client_key_dir"
-        wg genkey > "$client_key_dir/${client_name}-${interface_name}-private.key"
-        client_private_key=$(cat "$client_key_dir/${client_name}-${interface_name}-private.key")
-        echo "$client_private_key" | wg pubkey > "$client_key_dir/${client_name}-${interface_name}-public.key"
-        client_public_key=$(cat "$client_key_dir/${client_name}-${interface_name}-public.key")
-        wg genpsk > "$client_key_dir/${client_name}-${interface_name}-psk.key"
-        psk=$(cat "$client_key_dir/${client_name}-${interface_name}-psk.key")
-        chmod 600 "$client_key_dir/${client_name}-${interface_name}-private.key" \
-                  "$client_key_dir/${client_name}-${interface_name}-public.key" \
-                  "$client_key_dir/${client_name}-${interface_name}-psk.key"
+        client_private_key=$(wg genkey)
+        client_public_key=$(echo "$client_private_key" | wg pubkey)
+        psk=$(wg genpsk)
 
         client_inet_ip=$(echo "$client_inet" | cut -d '/' -f 1)
         client_inet6_ip=$(echo "$client_inet6" | cut -d '/' -f 1)
@@ -425,7 +401,6 @@ generate_client_configs() {
         old_name=$(yq e ".remote_peer[$i].name" "$(dirname "$0")/config.yaml.backup")
         if [[ "$old_name" != "$client_name" && -n "$old_name" ]]; then
             rm -f "$(dirname "$0")/wireguard-configs/${old_name}-${interface_name}.conf"
-            rm -rf "$(dirname "$0")/keys/${old_name}-${interface_name}"
         fi
 
         temp_file=$(mktemp)
@@ -523,7 +498,6 @@ configure_firewall() {
     if [[ "$inet_snat_ip" == "null" || -z "$inet_snat_ip" ]]; then
         inet_snat_ip="$server_inet_static"
     fi
-
     if [[ "$inet6_snat_ip" == "null" || -z "$inet6_snat_ip" ]]; then
         inet6_snat_ip="$server_inet6_static"
     fi
@@ -532,7 +506,6 @@ configure_firewall() {
         echo "Error: No inet SNAT IP available. Either specify local_peer.inet.nat44_public_IP, ensure host_interface has an inet, or set inet.dynamic to true."
         return 1
     fi
-
     if [[ "$inet6_nat" == "true" && "$inet6_dynamic" != "true" && -z "$inet6_snat_ip" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
         echo "Error: No inet6 SNAT IP available. Either specify local_peer.inet6.nat66_public_IP, ensure host_interface has an inet6, or set inet6.dynamic to true."
         return 1
@@ -546,7 +519,6 @@ configure_firewall() {
             nat_rules+=("ip saddr $vpn_inet_subnet oifname \"$host_interface\" snat to $inet_snat_ip persistent")
         fi
     fi
-
     if [[ "$inet6_nat" == "true" && "$inet6_enabled" == "true" ]]; then
         if [[ "$inet6_dynamic" == "true" ]]; then
             nat_rules+=("ip6 saddr $vpn_inet6_subnet oifname \"$host_interface\" masquerade persistent")
@@ -574,21 +546,13 @@ EOF
     rollback_actions+=("rm -f /etc/nftables/wg.nft")
     local nft_file="/etc/nftables/wg.nft"
 
-    if [[ -f "$nft_file" && -s "$nft_file" ]]; then
-        cp "$nft_file" "${nft_file}.backup-$(date +%F-%T)"
-    fi
-
     echo '#!/usr/sbin/nft -f' > "$nft_file"
     echo "" >> "$nft_file"
     echo "$wireguard_table" >> "$nft_file"
     chmod 600 "$nft_file"
 
     if ! nft -f "$nft_file"; then
-        echo "Error: Failed to apply nftables configuration from $nft_file. Restoring backup if available."
-        if [[ -f "${nft_file}.backup-$(date +%F-%T)" ]]; then
-            mv "${nft_file}.backup-$(date +%F-%T)" "$nft_file"
-            nft -f "$nft_file"
-        fi
+        echo "Error: Failed to apply nftables configuration from $nft_file."
         return 1
     fi
     rollback_actions+=("nft delete table inet wireguard")
@@ -630,7 +594,6 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
         else
             echo "nftables is not installed, installing it now..."
             apt install -y nftables
-            # We do NOT add nftables to rollback removal
         fi
 
         # Install other required packages
@@ -675,7 +638,7 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
 
     if [[ "$inet_enabled" == "true" ]]; then
         vpn_inet_subnet=$(ipcalc "$server_inet" | grep -oP 'Network:\s*\K[\d.]+/\d+')
-        if [[ -z "$vpn_inet_subnet" ]]; then
+        if [[ -z "$ loosevpn_inet_subnet" ]]; then
             echo "Error: Failed to calculate inet subnet using ipcalc for $server_inet."
             exit 1
         fi
@@ -743,7 +706,7 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
         fi
     fi
 
-    # Handle IPv6 forwarding (corrected sed command)
+    # Handle IPv6 forwarding
     if [[ $ipv6_forward_active -eq 0 ]]; then
         if grep -q "^#\s*net\.ipv6\.conf\.all\.forwarding\s*=\s*1" /etc/sysctl.conf; then
             echo "Found commented net.ipv6.conf.all.forwarding=1, attempting to uncomment..."
@@ -837,7 +800,6 @@ else
             fi
 
             port=$(yq e '.local_peer.port' config.yaml)
-            # Use the global interface_name
             [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
             inet_enabled=$(yq e '.local_peer.inet.enabled' config.yaml)
             server_inet=$(yq e '.local_peer.inet.gateway' config.yaml)
@@ -899,40 +861,6 @@ else
                     old_name=$(yq e ".remote_peer[$i].name" "$(dirname "$0")/config.yaml.backup")
                     if [[ -n "$old_name" && -z "${current_names[$old_name]}" ]]; then
                         echo "Detected removed client: $old_name. Cleaning up..."
-                        key_dir="$(dirname "$0")/keys/${old_name}-${interface_name}"
-                        old_public_key=""
-                        if [[ -f "$key_dir/${old_name}-${interface_name}-public.key" ]]; then
-                            old_public_key=$(cat "$key_dir/${old_name}-${interface_name}-public.key")
-                        fi
-
-                        if [[ -n "$old_public_key" && -f "/etc/wireguard/${interface_name}.conf" ]]; then
-                            temp_file=$(mktemp)
-                            awk -v pubkey="$old_public_key" '
-                            BEGIN { in_peer = 0; buffer = ""; keep = 1 }
-                            /^\[Peer\]$/ {
-                                if (in_peer && keep) { print buffer }
-                                in_peer = 1; keep = 1; buffer = $0 "\n"; next
-                            }
-                            in_peer && /PublicKey =/ {
-                                if ($3 == pubkey) { keep = 0 }
-                                buffer = buffer $0 "\n"; next
-                            }
-                            in_peer && /^$/ {
-                                if (keep) { print buffer }
-                                in_peer = 0; buffer = ""; next
-                            }
-                            in_peer { buffer = buffer $0 "\n"; next
-                            }
-                            { print $0 }
-                            END { if (in_peer && keep) { print buffer } }
-                            ' "/etc/wireguard/${interface_name}.conf" > "$temp_file"
-                            mv "$temp_file" "/etc/wireguard/${interface_name}.conf"
-                            chmod 600 "/etc/wireguard/${interface_name}.conf"
-                            echo "Removed $old_name from /etc/wireguard/${interface_name}.conf"
-                        elif [[ -z "$old_public_key" ]]; then
-                            echo "Warning: Could not find public key for $old_name to remove from server config."
-                        fi
-
                         client_conf="$(dirname "$0")/wireguard-configs/${old_name}-${interface_name}.conf"
                         if [[ -f "$client_conf" ]]; then
                             rm -f "$client_conf"
@@ -942,10 +870,6 @@ else
                         if [[ -f "$qr_file" ]]; then
                             rm -f "$qr_file"
                             echo "Removed QR code: $qr_file"
-                        fi
-                        if [[ -d "$key_dir" ]]; then
-                            rm -rf "$key_dir"
-                            echo "Removed key directory: $key_dir"
                         fi
                     fi
                 done
@@ -1128,7 +1052,6 @@ else
                 exit 1
             fi
 
-            # Use the global interface_name
             [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
             number_of_clients=$(yq e '.remote_peer | length' config.yaml)
 
@@ -1158,52 +1081,12 @@ else
             client_name=$(yq e ".remote_peer[$index].name" config.yaml)
             echo "Deleting client: $client_name..."
 
-            key_dir="$(dirname "$0")/keys/${client_name}-${interface_name}"
             server_conf="/etc/wireguard/${interface_name}.conf"
-
-            client_public_key=""
-            if [[ -f "$key_dir/${client_name}-${interface_name}-public.key" ]]; then
-                client_public_key=$(cat "$key_dir/${client_name}-${interface_name}-public.key")
-            fi
-
-            if [[ -n "$client_public_key" && -f "$server_conf" ]]; then
-                temp_file=$(mktemp)
-                awk -v pubkey="$client_public_key" '
-                BEGIN { in_peer = 0; buffer = ""; keep = 1 }
-                /^\[Peer\]$/ {
-                    if (in_peer && keep) { print buffer }
-                    in_peer = 1; keep = 1; buffer = $0 "\n"; next
-                }
-                in_peer && /PublicKey =/ {
-                    if ($3 == pubkey) { keep = 0 }
-                    buffer = buffer $0 "\n"; next
-                }
-                in_peer && /^$/ {
-                    if (keep) { print buffer }
-                    in_peer = 0; buffer = ""; next
-                }
-                in_peer { buffer = buffer $0 "\n"; next }
-                { print $0 }
-                END { if (in_peer && keep) { print buffer } }
-                ' "$server_conf" > "$temp_file"
-                mv "$temp_file" "$server_conf"
-                chmod 600 "$server_conf"
-                echo "Removed $client_name from $server_conf"
-            elif [[ -z "$client_public_key" ]]; then
-                echo "Warning: Could not find public key for $client_name to remove from server config."
-            elif [[ ! -f "$server_conf" ]]; then
-                echo "Warning: $server_conf not found; skipping server config update."
-            fi
 
             cp config.yaml config.yaml.tmp
             yq e -i "del(.remote_peer[$index])" config.yaml.tmp
             mv config.yaml.tmp config.yaml
             echo "Removed $client_name from config.yaml."
-
-            if [[ -d "$key_dir" ]]; then
-                rm -rf "$key_dir"
-                echo "Removed key directory: $key_dir"
-            fi
 
             client_conf="$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
             if [[ -f "$client_conf" ]]; then
@@ -1269,7 +1152,6 @@ else
             ;;
 
         4)
-            # Use the global interface_name
             [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
             systemctl disable --now wg-quick@"$interface_name"
 
@@ -1278,10 +1160,6 @@ else
             if [[ -d "$(dirname "$0")/wireguard-configs" ]]; then
                 rm -rf "$(dirname "$0")/wireguard-configs"
                 echo "Removed client configuration directory (including QR codes): $(dirname "$0")/wireguard-configs"
-            fi
-            if [[ -d "$(dirname "$0")/keys" ]]; then
-                rm -rf "$(dirname "$0")/keys"
-                echo "Removed keys directory: $(dirname "$0")/keys"
             fi
 
             rm -rf /etc/wireguard
