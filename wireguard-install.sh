@@ -38,6 +38,10 @@ fi
 interface_name=$(yq e '.local_peer.interface_name' config.yaml)
 if [[ "$interface_name" == "null" || -z "$interface_name" ]]; then
     interface_name="wg0"
+    echo "DEBUG: interface_name not specified in config.yaml, defaulting to: '$interface_name'"
+else
+    echo "DEBUG: Using interface_name from config.yaml: '$interface_name'"
+fi
 
 # Array to store rollback actions
 declare -a rollback_actions=()
