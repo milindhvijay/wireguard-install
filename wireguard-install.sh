@@ -1,5 +1,4 @@
 #!/bin/bash
-set -x  # Enable tracing for debugging; remove after testing
 
 if [ -z "$BASH_VERSION" ]; then
     echo "Error: This script must be run with Bash."
@@ -20,8 +19,34 @@ else
     exit 1
 fi
 
+if ! command -v yq &>/dev/null; then
+    echo "'yq' not found, installing it automatically..."
+    wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq &&\
+    chmod +x /usr/bin/yq
+    rollback_actions+=("rm -f /usr/bin/yq")
+    if ! command -v yq &>/dev/null; then
+        echo "Error: Failed to install 'yq'. Please install it manually."
+        exit 1
+    fi
+fi
+
+# Set interface_name after yq is available
+if [[ ! -f config.yaml ]]; then
+    echo "Error: 'config.yaml' not found in the current directory."
+    exit 1
+fi
+interface_name=$(yq e '.local_peer.interface_name' config.yaml)
+echo "DEBUG: Raw interface_name from YAML: '$interface_name'"
+if [[ "$interface_name" == "null" || -z "$interface_name" ]]; then
+    interface_name="wg0"
+    echo "DEBUG: interface_name not specified in config.yaml, defaulting to: '$interface_name'"
+else
+    echo "DEBUG: Using interface_name from config.yaml: '$interface_name'"
+fi
+
 # Array to store rollback actions
 declare -a rollback_actions=()
+sysctl_backup=""
 
 # Rollback function to undo changes on failure
 rollback_on_failure() {
@@ -116,7 +141,7 @@ cleanup_conflicting_interfaces() {
     local new_inet6="$2"
     local new_interface="$3"
 
-    for iface in $(ip link show type wireguard | grep -oP '^\d+: \K\w+' || true); do
+    for iface in $(ip link show type wireguard | grep -oP '^\d+: \K\w+'); do
         if [[ "$iface" != "$new_interface" ]]; then
             if ip addr show "$iface" | grep -q "$new_inet\|$new_inet6"; then
                 echo "Found conflicting interface '$iface' using IPs $new_inet or $new_inet6. Cleaning up..."
@@ -126,8 +151,6 @@ cleanup_conflicting_interfaces() {
                 rm -f "/etc/wireguard/${iface}.conf"
                 echo "Removed conflicting interface '$iface' and its config."
             fi
-        else
-            echo "Interface '$iface' matches intended interface '$new_interface', skipping cleanup."
         fi
     done
 }
@@ -611,17 +634,6 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
     else
         echo "Error: Unsupported OS."
         exit 1
-    fi
-
-    if ! command -v yq &>/dev/null; then
-        echo "'yq' not found, installing it automatically..."
-        wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq &&\
-        chmod +x /usr/bin/yq
-        rollback_actions+=("rm -f /usr/bin/yq")
-        if ! command -v yq &>/dev/null; then
-            echo "Error: Failed to install 'yq'. Please install it manually."
-            exit 1
-        fi
     fi
 
     if [[ ! -f config.yaml ]]; then
