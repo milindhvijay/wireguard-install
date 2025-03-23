@@ -1,4 +1,5 @@
 #!/bin/bash
+set -x  # Enable tracing for debugging; remove after testing
 
 if [ -z "$BASH_VERSION" ]; then
     echo "Error: This script must be run with Bash."
@@ -21,9 +22,6 @@ fi
 
 # Array to store rollback actions
 declare -a rollback_actions=()
-
-# Variable to store sysctl backup file name
-sysctl_backup=""
 
 # Rollback function to undo changes on failure
 rollback_on_failure() {
@@ -118,7 +116,7 @@ cleanup_conflicting_interfaces() {
     local new_inet6="$2"
     local new_interface="$3"
 
-    for iface in $(ip link show type wireguard | grep -oP '^\d+: \K\w+'); do
+    for iface in $(ip link show type wireguard | grep -oP '^\d+: \K\w+' || true); do
         if [[ "$iface" != "$new_interface" ]]; then
             if ip addr show "$iface" | grep -q "$new_inet\|$new_inet6"; then
                 echo "Found conflicting interface '$iface' using IPs $new_inet or $new_inet6. Cleaning up..."
@@ -128,6 +126,8 @@ cleanup_conflicting_interfaces() {
                 rm -f "/etc/wireguard/${iface}.conf"
                 echo "Removed conflicting interface '$iface' and its config."
             fi
+        else
+            echo "Interface '$iface' matches intended interface '$new_interface', skipping cleanup."
         fi
     done
 }
