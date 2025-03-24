@@ -220,10 +220,26 @@ generate_full_configs() {
     server_public_key=$(echo "$server_private_key" | wg pubkey)
     echo "DEBUG: Server public key: $server_public_key"
 
+    # Store existing peer PSKs before overwriting
+    declare -A existing_psks
+    if [[ -f "$server_conf" ]]; then
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^PublicKey\ =\ (.+)$ ]]; then
+                current_pubkey="${BASH_REMATCH[1]}"
+            elif [[ "$line" =~ ^PresharedKey\ =\ (.+)$ && -n "$current_pubkey" ]]; then
+                existing_psks["$current_pubkey"]="${BASH_REMATCH[1]}"
+                unset current_pubkey
+            fi
+        done < "$server_conf"
+        for pubkey in "${!existing_psks[@]}"; do
+            echo "DEBUG: Found existing PSK for public key $pubkey: ${existing_psks[$pubkey]}"
+        done
+    fi
+
     original_umask=$(umask)
     umask 077
 
-    # Write server config
+    # Write server config with preserved private key
     echo "DEBUG: Writing server config to $server_conf"
     cat << EOF > "$server_conf"
 [Interface]
@@ -260,15 +276,11 @@ EOF
             fi
             client_public_key=$(echo "$client_private_key" | wg pubkey)
             echo "DEBUG: Client $client_name public key: $client_public_key"
-            psk=$(awk -v pubkey="$client_public_key" '
-                $1 == "PublicKey" && $3 == pubkey {found=1}
-                found && $1 == "PresharedKey" {print $3; exit}
-                $1 == "[Peer]" {found=0}
-            ' "$server_conf")
-            if [[ -n "$psk" ]]; then
-                echo "DEBUG: Reusing existing PSK for $client_name: $psk"
+            if [[ -n "${existing_psks[$client_public_key]}" ]]; then
+                psk="${existing_psks[$client_public_key]}"
+                echo "DEBUG: Reusing existing PSK for $client_name from previous server config: $psk"
             else
-                echo "DEBUG: No matching PSK found for $client_name, generating new one."
+                echo "DEBUG: No existing PSK found for $client_name, generating new one."
                 psk=$(wg genpsk)
             fi
         else
@@ -281,7 +293,7 @@ EOF
             echo "DEBUG: New PSK for $client_name: $psk"
         fi
 
-        # IP assignment
+        # Handle IP assignment
         client_inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
         if [[ "$inet_enabled" == "true" && ( "$client_inet" == "null" || -z "$client_inet" ) ]]; then
             client_inet=$(find_next_inet "$base_inet" "$server_inet_mask" "${used_inets[@]}")
@@ -291,6 +303,7 @@ EOF
             fi
             used_inets+=("$(echo "$client_inet" | cut -d '/' -f 1)")
             yq e -i ".remote_peer[$i].inet_address = \"$client_inet\"" config.yaml.tmp
+            echo "DEBUG: Assigned new inet address for $client_name: $client_inet"
         else
             used_inets+=("$(echo "$client_inet" | cut -d '/' -f 1)")
         fi
@@ -304,6 +317,7 @@ EOF
             fi
             used_inet6s+=("$(echo "$client_inet6" | cut -d '/' -f 1)")
             yq e -i ".remote_peer[$i].inet6_address = \"$client_inet6\"" config.yaml.tmp
+            echo "DEBUG: Assigned new inet6 address for $client_name: $client_inet6"
         else
             used_inet6s+=("$(echo "$client_inet6" | cut -d '/' -f 1)")
         fi
