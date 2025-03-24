@@ -1222,24 +1222,98 @@ else
             echo "Deleting client: $client_name..."
 
             server_conf="/etc/wireguard/${interface_name}.conf"
+            client_conf="$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
 
+            # Extract client public key before deleting the config
+            if [[ -f "$client_conf" ]]; then
+                client_private_key=$(awk '/PrivateKey =/ {print $3}' "$client_conf")
+                if [[ -n "$client_private_key" ]]; then
+                    client_public_key=$(echo "$client_private_key" | wg pubkey)
+                    echo "DEBUG: Client $client_name public key to remove: $client_public_key"
+                else
+                    echo "Warning: No PrivateKey found in $client_conf, cannot precisely remove from server config."
+                    client_public_key=""
+                fi
+            else
+                echo "DEBUG: No client config file $client_conf found, checking server config for public key."
+                client_public_key=""
+            fi
+
+            # If no client config exists, try to find the public key in config.yaml or server conf
+            if [[ -z "$client_public_key" ]]; then
+                inet_address=$(yq e ".remote_peer[$index].inet_address" config.yaml)
+                if [[ -n "$inet_address" && "$inet_address" != "null" ]]; then
+                    inet_ip=$(echo "$inet_address" | cut -d '/' -f 1)
+                    client_public_key=$(awk -v ip="$inet_ip" '
+                        /PublicKey =/ { pubkey = $3 }
+                        $0 ~ ip { print pubkey; exit }
+                    ' "$server_conf")
+                    if [[ -n "$client_public_key" ]]; then
+                        echo "DEBUG: Found public key $client_public_key for $client_name in $server_conf using IP $inet_ip"
+                    else
+                        echo "Warning: Could not determine public key for $client_name from $server_conf."
+                    fi
+                fi
+            fi
+
+            # Remove client from config.yaml
             cp config.yaml config.yaml.tmp
             yq e -i "del(.remote_peer[$index])" config.yaml.tmp
             mv config.yaml.tmp config.yaml
             echo "Removed $client_name from config.yaml."
 
-            client_conf="$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
+            # Remove client config file
             if [[ -f "$client_conf" ]]; then
                 rm -f "$client_conf"
                 echo "Removed client config: $client_conf"
             fi
 
+            # Remove QR code
             qr_file="$(dirname "$0")/wireguard-configs/qr/${client_name}-${interface_name}.png"
             if [[ -f "$qr_file" ]]; then
                 rm -f "$qr_file"
                 echo "Removed QR code: $qr_file"
             fi
 
+            # Remove client peer entry from server config if public key is known
+            if [[ -n "$client_public_key" && -f "$server_conf" ]]; then
+                echo "DEBUG: Removing peer entry for $client_name from $server_conf"
+                temp_file=$(mktemp)
+                awk -v pubkey="$client_public_key" '
+                BEGIN { in_section = 0; buffer = ""; need_blank = 0 }
+                /^\[(Interface|Peer)\]$/ {
+                    if (in_section && keep) {
+                        if (need_blank) { print "" }
+                        print buffer
+                        need_blank = 1
+                    }
+                    in_section = 1; keep = 1; buffer = $0 "\n"; next
+                }
+                in_section && /PublicKey =/ {
+                    if ($3 == pubkey) { keep = 0 } else { keep = 1 }
+                    buffer = buffer $0 "\n"; next
+                }
+                in_section && /^$/ {
+                    if (keep) {
+                        if (need_blank) { print "" }
+                        print buffer
+                        need_blank = 1
+                    }
+                    in_section = 0; buffer = ""; next
+                }
+                in_section { buffer = buffer $0 "\n"; next }
+                END { if (in_section && keep) { if (need_blank) { print "" } print buffer } }
+                ' "$server_conf" > "$temp_file"
+                mv "$temp_file" "$server_conf"
+                chmod 600 "$server_conf"
+                # Clean up extra blank lines
+                sed -i -e :a -e '/^\n*$/{$d;N;};/\n$/ba' "$server_conf"
+                echo "Removed $client_name peer entry from $server_conf."
+            else
+                echo "Warning: Could not remove $client_name from $server_conf (public key unknown or file missing)."
+            fi
+
+            # Update backup and restart WireGuard
             cp config.yaml "$(dirname "$0")/config.yaml.backup"
             chmod 600 "$(dirname "$0")/config.yaml.backup"
 
