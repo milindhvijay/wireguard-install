@@ -339,7 +339,7 @@ generate_client_configs() {
         gateway_changed=true
     fi
 
-    # Determine public endpoint
+    # Determine public endpoint, defaulting to server's IPv6 address
     public_endpoint=$(yq e '.local_peer.public_endpoint' config.yaml)
     if [[ -n "$public_endpoint" && "$public_endpoint" != "null" ]]; then
         if [[ "$public_endpoint" =~ : && ! "$public_endpoint" =~ \. ]]; then
@@ -348,14 +348,26 @@ generate_client_configs() {
             endpoint="$public_endpoint"
         fi
     else
-        endpoint=$(wget -qO- https://api6.ipify.org || curl -s https://api6.ipify.org)
-        if [[ -n "$endpoint" ]]; then
-            endpoint="[$endpoint]"
+        # Default to server's IPv6 address from host_interface
+        host_interface=$(yq e '.local_peer.host_interface' config.yaml)
+        if [[ -z "$host_interface" || "$host_interface" == "null" ]]; then
+            echo "Error: host_interface not specified in config.yaml, cannot determine default IPv6 address."
+            return 1
+        fi
+        server_ipv6=$(ip -6 addr show "$host_interface" scope global | grep -oP 'inet6 \K[0-9a-f:]+' | head -n 1)
+        if [[ -n "$server_ipv6" ]]; then
+            endpoint="[$server_ipv6]"
         else
-            endpoint=$(wget -qO- https://api4.ipify.org || curl -s https://api4.ipify.org)
-            if [[ -z "$endpoint" ]]; then
-                echo "Error: Could not auto-detect public IP (neither inet6 nor inet)."
-                return 1
+            # Fallback to public IP detection
+            endpoint=$(wget -qO- https://api6.ipify.org || curl -s https://api6.ipify.org)
+            if [[ -n "$endpoint" ]]; then
+                endpoint="[$endpoint]"
+            else
+                endpoint=$(wget -qO- https://api4.ipify.org || curl -s https://api4.ipify.org)
+                if [[ -z "$endpoint" ]]; then
+                    echo "Error: Could not auto-detect public IP (neither inet6 nor inet) and no server IPv6 found."
+                    return 1
+                fi
             fi
         fi
     fi
