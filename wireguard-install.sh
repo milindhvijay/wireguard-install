@@ -582,6 +582,11 @@ EOF
     return 0
 }
 
+echo "Server PrivateKey: $server_private_key"
+echo "Server PublicKey: $server_public_key"
+echo "Client $client_name PrivateKey: $client_private_key"
+echo "Client $client_name PublicKey: $client_public_key"
+
 clear_firewall_rules() {
     local nft_file="/etc/nftables/wg.nft"
 
