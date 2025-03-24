@@ -354,18 +354,22 @@ generate_client_configs() {
             echo "Error: host_interface not specified in config.yaml, cannot determine default IPv6 address."
             return 1
         fi
-        server_ipv6=$(ip -6 addr show "$host_interface" scope global | grep -oP 'inet6 \K[0-9a-f:]+' | head -n 1)
+        server_ipv6=$(ip -6 addr show "$host_interface" scope global | grep -oP 'inet6 \K[0-9a-f:]+' | grep -v '^fe80:' | head -n 1)
         if [[ -n "$server_ipv6" ]]; then
             endpoint="[$server_ipv6]"
+            echo "Using server IPv6 address: $endpoint"
         else
-            # Fallback to public IP detection
+            echo "No global IPv6 address found on $host_interface, falling back to public IP detection..."
             endpoint=$(wget -qO- https://api6.ipify.org || curl -s https://api6.ipify.org)
             if [[ -n "$endpoint" ]]; then
                 endpoint="[$endpoint]"
+                echo "Using detected IPv6 public IP: $endpoint"
             else
                 endpoint=$(wget -qO- https://api4.ipify.org || curl -s https://api4.ipify.org)
-                if [[ -z "$endpoint" ]]; then
-                    echo "Error: Could not auto-detect public IP (neither inet6 nor inet) and no server IPv6 found."
+                if [[ -n "$endpoint" ]]; then
+                    echo "No IPv6 available, using detected IPv4 public IP: $endpoint"
+                else
+                    echo "Error: Could not determine server IP (no IPv6 on $host_interface, no public IPv6 or IPv4 detected)."
                     return 1
                 fi
             fi
