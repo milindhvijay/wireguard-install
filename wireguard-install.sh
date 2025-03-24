@@ -295,7 +295,13 @@ EOF
 
         # Handle IP assignment
         client_inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
-        if [[ "$inet_enabled" == "true" && ( "$client_inet" == "null" || -z "$client_inet" ) ]]; then
+        old_server_inet=$(yq e '.local_peer.inet.gateway' "$(dirname "$0")/config.yaml.backup" 2>/dev/null || echo "")
+        inet_gateway_changed=false
+        if [[ "$inet_enabled" == "true" && "$server_inet" != "$old_server_inet" ]]; then
+            echo "DEBUG: inet gateway changed from '$old_server_inet' to '$server_inet'. Recalculating client IPv4 address."
+            inet_gateway_changed=true
+        fi
+        if [[ "$inet_enabled" == "true" && ( "$client_inet" == "null" || -z "$client_inet" || "$inet_gateway_changed" == "true" ) ]]; then
             client_inet=$(find_next_inet "$base_inet" "$server_inet_mask" "${used_inets[@]}")
             if [[ $? -ne 0 ]]; then
                 echo "$client_inet"
@@ -309,7 +315,13 @@ EOF
         fi
 
         client_inet6=$(yq e ".remote_peer[$i].inet6_address" config.yaml)
-        if [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 && ( "$client_inet6" == "null" || -z "$client_inet6" ) ]]; then
+        old_server_inet6=$(yq e '.local_peer.inet6.gateway' "$(dirname "$0")/config.yaml.backup" 2>/dev/null || echo "")
+        inet6_gateway_changed=false
+        if [[ "$inet6_enabled" == "true" && "$server_inet6" != "$old_server_inet6" ]]; then
+            echo "DEBUG: inet6 gateway changed from '$old_server_inet6' to '$server_inet6'. Recalculating client IPv6 address."
+            inet6_gateway_changed=true
+        fi
+        if [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 && ( "$client_inet6" == "null" || -z "$client_inet6" || "$inet6_gateway_changed" == "true" ) ]]; then
             client_inet6=$(find_next_inet6 "$base_inet6" "$server_inet6_mask" "${used_inet6s[@]}")
             if [[ $? -ne 0 ]]; then
                 echo "$client_inet6"
@@ -501,31 +513,37 @@ generate_client_configs() {
 
         # Recalculate IPs if gateway changed or missing
         client_inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
-        if [[ "$inet_enabled" == "true" && $(ip -4 addr | grep -c 'inet ') -gt 0 && ( "$client_inet" == "null" || -z "$client_inet" ) ]]; then
+        old_server_inet=$(yq e '.local_peer.inet.gateway' "$(dirname "$0")/config.yaml.backup" 2>/dev/null || echo "")
+        inet_gateway_changed=false
+        if [[ "$inet_enabled" == "true" && "$server_inet" != "$old_server_inet" ]]; then
+            echo "DEBUG: inet gateway changed from '$old_server_inet' to '$server_inet'. Recalculating client IPv4 address."
+            inet_gateway_changed=true
+        fi
+        if [[ "$inet_enabled" == "true" && ( "$client_inet" == "null" || -z "$client_inet" || "$inet_gateway_changed" == "true" ) ]]; then
             client_inet=$(find_next_inet "$base_inet" "$server_inet_mask" "${used_inets[@]}")
             if [[ $? -ne 0 ]]; then
                 echo "$client_inet"
                 return 1
             fi
             used_inets+=("$(echo "$client_inet" | cut -d '/' -f 1)")
-            yq e -i ".remote_peer[$i].inet_address = \"$client_inet\"" config.yaml.tmp
             echo "DEBUG: Assigned new inet address for $client_name: $client_inet"
-        else
-            used_inets+=("$(echo "$client_inet" | cut -d '/' -f 1)")
         fi
 
         client_inet6=$(yq e ".remote_peer[$i].inet6_address" config.yaml)
-        if [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 && ( "$client_inet6" == "null" || -z "$client_inet6" ) ]]; then
+        old_server_inet6=$(yq e '.local_peer.inet6.gateway' "$(dirname "$0")/config.yaml.backup" 2>/dev/null || echo "")
+        inet6_gateway_changed=false
+        if [[ "$inet6_enabled" == "true" && "$server_inet6" != "$old_server_inet6" ]]; then
+            echo "DEBUG: inet6 gateway changed from '$old_server_inet6' to '$server_inet6'. Recalculating client IPv6 address."
+            inet6_gateway_changed=true
+        fi
+        if [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 && ( "$client_inet6" == "null" || -z "$client_inet6" || "$inet6_gateway_changed" == "true" ) ]]; then
             client_inet6=$(find_next_inet6 "$base_inet6" "$server_inet6_mask" "${used_inet6s[@]}")
             if [[ $? -ne 0 ]]; then
                 echo "$client_inet6"
                 return 1
             fi
             used_inet6s+=("$(echo "$client_inet6" | cut -d '/' -f 1)")
-            yq e -i ".remote_peer[$i].inet6_address = \"$client_inet6\"" config.yaml.tmp
             echo "DEBUG: Assigned new inet6 address for $client_name: $client_inet6"
-        else
-            used_inet6s+=("$(echo "$client_inet6" | cut -d '/' -f 1)")
         fi
 
         yq e -i ".remote_peer[$i].inet_address = \"$client_inet\"" config.yaml.tmp
