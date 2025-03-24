@@ -95,26 +95,8 @@ find_next_inet() {
     local base_inet="$1"
     local mask="$2"
     local used_ips=("${@:3}")
-    local old_client_ip="$3"  # Pass old IP as first of the used_ips for offset calculation
     local octet=2
     local max_octet=$((256 - 1))
-
-    # If old_client_ip is provided and not null, calculate its offset
-    if [[ -n "$old_client_ip" && "$old_client_ip" != "null" ]]; then
-        local old_ip_last_octet=$(echo "$old_client_ip" | cut -d '.' -f 4 | cut -d '/' -f 1)
-        local old_server_ip=$(yq e '.local_peer.inet.gateway' "$(dirname "$0")/config.yaml.backup" | cut -d '.' -f 4 | cut -d '/' -f 1)
-        local offset=$((old_ip_last_octet - old_server_ip))
-        local candidate_octet=$((octet + offset - 1))  # Adjust for server IP at .1
-        if [[ $candidate_octet -le $max_octet ]]; then
-            local candidate="${base_inet}.${candidate_octet}"
-            if ! is_inet_in_use "$candidate" "${used_ips[@]}"; then
-                echo "$candidate/$mask"
-                return 0
-            fi
-        fi
-    fi
-
-    # Fallback to original logic if offset doesn’t work or no old IP
     while [[ $octet -le $max_octet ]]; do
         local candidate="${base_inet}.${octet}"
         if ! is_inet_in_use "$candidate" "${used_ips[@]}"; then
@@ -131,31 +113,8 @@ find_next_inet6() {
     local base_inet6="$1"
     local mask="$2"
     local used_ips=("${@:3}")
-    local old_client_ip="$3"  # Pass old IPv6 as first of the used_ips for offset calculation
     local segment=2
     local max_segment=$((16#ffff))
-
-    # If old_client_ip is provided and not null, calculate its offset
-    if [[ -n "$old_client_ip" && "$old_client_ip" != "null" ]]; then
-        # Extract the last segment of the old client IP and old server IP
-        local old_ip_last_segment=$(echo "$old_client_ip" | sed 's/.*://' | cut -d '/' -f 1)
-        local old_server_ip=$(yq e '.local_peer.inet6.gateway' "$(dirname "$0")/config.yaml.backup" | sed 's/.*://' | cut -d '/' -f 1)
-        # Convert hex to decimal for calculation
-        local old_ip_dec=$((16#$old_ip_last_segment))
-        local old_server_dec=$((16#$old_server_ip))
-        local offset=$((old_ip_dec - old_server_dec))
-        local candidate_segment_dec=$((segment + offset - 1))  # Adjust for server at :1
-        if [[ $candidate_segment_dec -le $max_segment ]]; then
-            local candidate_segment=$(printf "%x" "$candidate_segment_dec")
-            local candidate="${base_inet6}:${candidate_segment}"
-            if ! is_inet6_in_use "$candidate" "${used_ips[@]}"; then
-                echo "$candidate/$mask"
-                return 0
-            fi
-        fi
-    fi
-
-    # Fallback to original logic if offset doesn’t work or no old IP
     while [[ $segment -le $max_segment ]]; do
         local candidate_segment=$(printf "%x" "$segment")
         local candidate="${base_inet6}:${candidate_segment}"
@@ -187,25 +146,6 @@ check_duplicate_client_names() {
     return 0
 }
 
-cleanup_conflicting_interfaces() {
-    local new_inet="$1"
-    local new_inet6="$2"
-    local new_interface="$3"
-
-    for iface in $(ip link show type wireguard | grep -oP '^\d+: \K\w+'); do
-        if [[ "$iface" != "$new_interface" ]]; then
-            if ip addr show "$iface" | grep -q "$new_inet\|$new_inet6"; then
-                echo "Found conflicting interface '$iface' using IPs $new_inet or $new_inet6. Cleaning up..."
-                systemctl stop wg-quick@"$iface" 2>/dev/null || echo "Service $iface not running."
-                systemctl disable wg-quick@"$iface" 2>/dev/null || true
-                ip link delete "$iface" 2>/dev/null || echo "Failed to delete $iface, may already be gone."
-                rm -f "/etc/wireguard/${iface}.conf"
-                echo "Removed conflicting interface '$iface' and its config."
-            fi
-        fi
-    done
-}
-
 generate_full_configs() {
     if ! check_duplicate_client_names; then
         return 1
@@ -227,17 +167,6 @@ generate_full_configs() {
     server_inet6_mask=$(echo "$server_inet6" | cut -d '/' -f 2)
     base_inet6=$(echo "$server_inet6_ip" | sed 's/:[0-9a-f]*$//')
 
-    # Check if gateways changed (if backup exists)
-    gateway_changed=false
-    if [[ -f "$(dirname "$0")/config.yaml.backup" ]]; then
-        old_server_inet=$(yq e '.local_peer.inet.gateway' "$(dirname "$0")/config.yaml.backup")
-        old_server_inet6=$(yq e '.local_peer.inet6.gateway' "$(dirname "$0")/config.yaml.backup")
-        [[ "$inet_enabled" == "true" && "$server_inet" != "$old_server_inet" ]] && gateway_changed=true
-        [[ "$inet6_enabled" == "true" && "$server_inet6" != "$old_server_inet6" ]] && gateway_changed=true
-    fi
-
-    cleanup_conflicting_interfaces "$server_inet_ip" "$server_inet6_ip" "$interface_name"
-
     original_umask=$(umask)
     umask 077
 
@@ -251,7 +180,6 @@ PrivateKey = $server_private_key
 ListenPort = $port
 MTU = $mtu
 EOF
-    rollback_actions+=("rm -f /etc/wireguard/${interface_name}.conf")
 
     number_of_clients=$(yq e '.remote_peer | length' config.yaml)
     cp config.yaml config.yaml.tmp
@@ -259,34 +187,8 @@ EOF
     mkdir -p "$(dirname "$0")/wireguard-configs"
     rollback_actions+=("rm -rf \"$(dirname "$0")/wireguard-configs\"")
 
-    if [[ -n "$public_endpoint" && "$public_endpoint" != "null" ]]; then
-        if [[ "$public_endpoint" =~ : && ! "$public_endpoint" =~ \. ]]; then
-            endpoint="[$public_endpoint]"
-        else
-            endpoint="$public_endpoint"
-        fi
-    else
-        endpoint=$(wget -qO- https://api6.ipify.org || curl -s https://api6.ipify.org)
-        if [[ -n "$endpoint" ]]; then
-            endpoint="[$endpoint]"
-        else
-            endpoint=$(wget -qO- https://api4.ipify.org || curl -s https://api4.ipify.org)
-            if [[ -z "$endpoint" ]]; then
-                echo "Error: Could not auto-detect public IP (neither inet6 nor inet)."
-                return 1
-            fi
-        fi
-    fi
-
     local -a used_inets=("$server_inet_ip")
     local -a used_inet6s=("$server_inet6_ip")
-    for i in $(seq 0 $(($number_of_clients - 1))); do
-        local inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
-        local inet6=$(yq e ".remote_peer[$i].inet6_address" config.yaml)
-        [[ "$inet" != "null" && -n "$inet" ]] && used_inets+=("$(echo "$inet" | cut -d '/' -f 1)")
-        [[ "$inet6" != "null" && -n "$inet6" ]] && used_inet6s+=("$(echo "$inet6" | cut -d '/' -f 1)")
-    done
-
     for i in $(seq 0 $(($number_of_clients - 1))); do
         client_name=$(yq e ".remote_peer[$i].name" config.yaml)
         client_dns=$(yq e ".remote_peer[$i].dns" config.yaml)
@@ -295,39 +197,32 @@ EOF
         client_allowed_ips=$(yq e ".remote_peer[$i].allowed_ips" config.yaml)
         client_persistent_keepalive=$(yq e ".remote_peer[$i].persistent_keepalive" config.yaml)
 
-        # Reuse existing IPs unless gateway changed or IP is unset
+        # Preserve existing inet_address if it exists
         client_inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
-        if [[ "$inet_enabled" == "true" ]]; then
-            if [[ "$gateway_changed" == "true" || "$client_inet" == "null" || -z "$client_inet" ]]; then
-                # Pass old client IP to preserve offset when gateway changes
-                old_client_inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
-                client_inet=$(find_next_inet "$base_inet" "$server_inet_mask" "$old_client_inet" "${used_inets[@]}")
-                if [[ $? -ne 0 ]]; then
-                    echo "$client_inet"
-                    return 1
-                fi
-                used_inets+=("$(echo "$client_inet" | cut -d '/' -f 1)")
+        if [[ "$inet_enabled" == "true" && ( "$client_inet" == "null" || -z "$client_inet" ) ]]; then
+            client_inet=$(find_next_inet "$base_inet" "$server_inet_mask" "${used_inets[@]}")
+            if [[ $? -ne 0 ]]; then
+                echo "$client_inet"
+                return 1
             fi
+            used_inets+=("$(echo "$client_inet" | cut -d '/' -f 1)")
             yq e -i ".remote_peer[$i].inet_address = \"$client_inet\"" config.yaml.tmp
+        else
+            used_inets+=("$(echo "$client_inet" | cut -d '/' -f 1)")
         fi
 
+        # Preserve existing inet6_address if it exists
         client_inet6=$(yq e ".remote_peer[$i].inet6_address" config.yaml)
-        if [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
-            if [[ "$gateway_changed" == "true" || "$client_inet6" == "null" || -z "$client_inet6" ]]; then
-                # Pass old client IPv6 to preserve offset when gateway changes
-                old_client_inet6=$(yq e ".remote_peer[$i].inet6_address" config.yaml)
-                client_inet6=$(find_next_inet6 "$base_inet6" "$server_inet6_mask" "$old_client_inet6" "${used_inet6s[@]}")
-                if [[ $? -ne 0 ]]; then
-                    echo "$client_inet6"
-                    return 1
-                fi
-                used_inet6s+=("$(echo "$client_inet6" | cut -d '/' -f 1)")
+        if [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 && ( "$client_inet6" == "null" || -z "$client_inet6" ) ]]; then
+            client_inet6=$(find_next_inet6 "$base_inet6" "$server_inet6_mask" "${used_inet6s[@]}")
+            if [[ $? -ne 0 ]]; then
+                echo "$client_inet6"
+                return 1
             fi
-        fi
-
-        yq e -i ".remote_peer[$i].inet_address = \"$client_inet\"" config.yaml.tmp
-        if [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
+            used_inet6s+=("$(echo "$client_inet6" | cut -d '/' -f 1)")
             yq e -i ".remote_peer[$i].inet6_address = \"$client_inet6\"" config.yaml.tmp
+        else
+            used_inet6s+=("$(echo "$client_inet6" | cut -d '/' -f 1)")
         fi
 
         client_private_key=$(wg genkey)
@@ -387,15 +282,6 @@ generate_client_configs() {
     base_inet6=$(echo "$server_inet6_ip" | sed 's/:[0-9a-f]*$//')
     server_public_key=$(wg show "$interface_name" public-key)
 
-    # Check if gateways changed (if backup exists)
-    gateway_changed=false
-    if [[ -f "$(dirname "$0")/config.yaml.backup" ]]; then
-        old_server_inet=$(yq e '.local_peer.inet.gateway' "$(dirname "$0")/config.yaml.backup")
-        old_server_inet6=$(yq e '.local_peer.inet6.gateway' "$(dirname "$0")/config.yaml.backup")
-        [[ "$inet_enabled" == "true" && "$server_inet" != "$old_server_inet" ]] && gateway_changed=true
-        [[ "$inet6_enabled" == "true" && "$server_inet6" != "$old_server_inet6" ]] && gateway_changed=true
-    fi
-
     public_endpoint=$(yq e '.local_peer.public_endpoint' config.yaml)
     if [[ -n "$public_endpoint" && "$public_endpoint" != "null" ]]; then
         if [[ "$public_endpoint" =~ : && ! "$public_endpoint" =~ \. ]]; then
@@ -439,33 +325,28 @@ generate_client_configs() {
         client_allowed_ips=$(yq e ".remote_peer[$i].allowed_ips" config.yaml)
         client_persistent_keepalive=$(yq e ".remote_peer[$i].persistent_keepalive" config.yaml)
 
-        # Reuse existing IPs unless gateway changed or IP is unset
         client_inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
-        if [[ "$inet_enabled" == "true" ]]; then
-            if [[ "$gateway_changed" == "true" || "$client_inet" == "null" || -z "$client_inet" ]]; then
-                # Pass old client IP to preserve offset when gateway changes
-                old_client_inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
-                client_inet=$(find_next_inet "$base_inet" "$server_inet_mask" "$old_client_inet" "${used_inets[@]}")
-                if [[ $? -ne 0 ]]; then
-                    echo "$client_inet"
-                    return 1
-                fi
-                used_inets+=("$(echo "$client_inet" | cut -d '/' -f 1)")
+        if [[ "$inet_enabled" == "true" && ( "$client_inet" == "null" || -z "$client_inet" ) ]]; then
+            client_inet=$(find_next_inet "$base_inet" "$server_inet_mask" "${used_inets[@]}")
+            if [[ $? -ne 0 ]]; then
+                echo "$client_inet"
+                return 1
             fi
+            used_inets+=("$(echo "$client_inet" | cut -d '/' -f 1)")
         fi
 
         client_inet6=$(yq e ".remote_peer[$i].inet6_address" config.yaml)
-        if [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
-            if [[ "$gateway_changed" == "true" || "$client_inet6" == "null" || -z "$client_inet6" ]]; then
-                # Pass old client IPv6 to preserve offset when gateway changes
-                old_client_inet6=$(yq e ".remote_peer[$i].inet6_address" config.yaml)
-                client_inet6=$(find_next_inet6 "$base_inet6" "$server_inet6_mask" "$old_client_inet6" "${used_inet6s[@]}")
-                if [[ $? -ne 0 ]]; then
-                    echo "$client_inet6"
-                    return 1
-                fi
-                used_inet6s+=("$(echo "$client_inet6" | cut -d '/' -f 1)")
+        if [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 && ( "$client_inet6" == "null" || -z "$client_inet6" ) ]]; then
+            client_inet6=$(find_next_inet6 "$base_inet6" "$server_inet6_mask" "${used_inet6s[@]}")
+            if [[ $? -ne 0 ]]; then
+                echo "$client_inet6"
+                return 1
             fi
+            used_inet6s+=("$(echo "$client_inet6" | cut -d '/' -f 1)")
+        fi
+
+        yq e -i ".remote_peer[$i].inet_address = \"$client_inet\"" config.yaml.tmp
+        if [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
             yq e -i ".remote_peer[$i].inet6_address = \"$client_inet6\"" config.yaml.tmp
         fi
 
