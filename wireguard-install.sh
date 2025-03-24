@@ -95,8 +95,26 @@ find_next_inet() {
     local base_inet="$1"
     local mask="$2"
     local used_ips=("${@:3}")
+    local old_client_ip="$3"  # Pass old IP as first of the used_ips for offset calculation
     local octet=2
     local max_octet=$((256 - 1))
+
+    # If old_client_ip is provided and not null, calculate its offset
+    if [[ -n "$old_client_ip" && "$old_client_ip" != "null" ]]; then
+        local old_ip_last_octet=$(echo "$old_client_ip" | cut -d '.' -f 4 | cut -d '/' -f 1)
+        local old_server_ip=$(yq e '.local_peer.inet.gateway' "$(dirname "$0")/config.yaml.backup" | cut -d '.' -f 4 | cut -d '/' -f 1)
+        local offset=$((old_ip_last_octet - old_server_ip))
+        local candidate_octet=$((octet + offset - 1))  # Adjust for server IP at .1
+        if [[ $candidate_octet -le $max_octet ]]; then
+            local candidate="${base_inet}.${candidate_octet}"
+            if ! is_inet_in_use "$candidate" "${used_ips[@]}"; then
+                echo "$candidate/$mask"
+                return 0
+            fi
+        fi
+    fi
+
+    # Fallback to original logic if offset doesn’t work or no old IP
     while [[ $octet -le $max_octet ]]; do
         local candidate="${base_inet}.${octet}"
         if ! is_inet_in_use "$candidate" "${used_ips[@]}"; then
@@ -113,8 +131,31 @@ find_next_inet6() {
     local base_inet6="$1"
     local mask="$2"
     local used_ips=("${@:3}")
+    local old_client_ip="$3"  # Pass old IPv6 as first of the used_ips for offset calculation
     local segment=2
     local max_segment=$((16#ffff))
+
+    # If old_client_ip is provided and not null, calculate its offset
+    if [[ -n "$old_client_ip" && "$old_client_ip" != "null" ]]; then
+        # Extract the last segment of the old client IP and old server IP
+        local old_ip_last_segment=$(echo "$old_client_ip" | sed 's/.*://' | cut -d '/' -f 1)
+        local old_server_ip=$(yq e '.local_peer.inet6.gateway' "$(dirname "$0")/config.yaml.backup" | sed 's/.*://' | cut -d '/' -f 1)
+        # Convert hex to decimal for calculation
+        local old_ip_dec=$((16#$old_ip_last_segment))
+        local old_server_dec=$((16#$old_server_ip))
+        local offset=$((old_ip_dec - old_server_dec))
+        local candidate_segment_dec=$((segment + offset - 1))  # Adjust for server at :1
+        if [[ $candidate_segment_dec -le $max_segment ]]; then
+            local candidate_segment=$(printf "%x" "$candidate_segment_dec")
+            local candidate="${base_inet6}:${candidate_segment}"
+            if ! is_inet6_in_use "$candidate" "${used_ips[@]}"; then
+                echo "$candidate/$mask"
+                return 0
+            fi
+        fi
+    fi
+
+    # Fallback to original logic if offset doesn’t work or no old IP
     while [[ $segment -le $max_segment ]]; do
         local candidate_segment=$(printf "%x" "$segment")
         local candidate="${base_inet6}:${candidate_segment}"
@@ -258,7 +299,9 @@ EOF
         client_inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
         if [[ "$inet_enabled" == "true" ]]; then
             if [[ "$gateway_changed" == "true" || "$client_inet" == "null" || -z "$client_inet" ]]; then
-                client_inet=$(find_next_inet "$base_inet" "$server_inet_mask" "${used_inets[@]}")
+                # Pass old client IP to preserve offset when gateway changes
+                old_client_inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
+                client_inet=$(find_next_inet "$base_inet" "$server_inet_mask" "$old_client_inet" "${used_inets[@]}")
                 if [[ $? -ne 0 ]]; then
                     echo "$client_inet"
                     return 1
@@ -394,7 +437,9 @@ generate_client_configs() {
         client_inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
         if [[ "$inet_enabled" == "true" ]]; then
             if [[ "$gateway_changed" == "true" || "$client_inet" == "null" || -z "$client_inet" ]]; then
-                client_inet=$(find_next_inet "$base_inet" "$server_inet_mask" "${used_inets[@]}")
+                # Pass old client IP to preserve offset when gateway changes
+                old_client_inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
+                client_inet=$(find_next_inet "$base_inet" "$server_inet_mask" "$old_client_inet" "${used_inets[@]}")
                 if [[ $? -ne 0 ]]; then
                     echo "$client_inet"
                     return 1
