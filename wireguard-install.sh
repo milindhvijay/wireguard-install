@@ -165,16 +165,16 @@ cleanup_conflicting_interfaces() {
     done
 }
 
-get_existing_client_key() {
+get_existing_psk() {
     local client_name="$1"
     local conf_file="$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
     if [[ -f "$conf_file" ]]; then
-        local key=$(grep "^PrivateKey" "$conf_file" | cut -d '=' -f 2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        if [[ -n "$key" ]]; then
-            echo "$key"
+        local psk=$(grep "^PresharedKey" "$conf_file" | cut -d '=' -f 2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        if [[ -n "$psk" ]]; then
+            echo "$psk"
             return 0
         else
-            echo "Warning: No PrivateKey found in $conf_file" >&2
+            echo "Warning: No PresharedKey found in $conf_file" >&2
             return 1
         fi
     else
@@ -183,17 +183,21 @@ get_existing_client_key() {
     fi
 }
 
-validate_key() {
+validate_base64_key() {
     local key="$1"
+    local key_type="$2"  # e.g., "PrivateKey" or "PresharedKey"
     local key_length=$(echo -n "$key" | wc -c)
     if [[ $key_length -ne 44 ]]; then
-        echo "Error: Key length ($key_length) is not 44 characters: $key" >&2
+        echo "Error: $key_type length ($key_length) is not 44 characters: $key" >&2
         return 1
     fi
-    echo "$key" | wg pubkey >/dev/null 2>&1 || {
-        echo "Error: Invalid key format: $key" >&2
-        return 1
-    }
+    # For private keys, also check wg pubkey compatibility
+    if [[ "$key_type" == "PrivateKey" ]]; then
+        echo "$key" | wg pubkey >/dev/null 2>&1 || {
+            echo "Error: Invalid $key_type format: $key" >&2
+            return 1
+        }
+    fi
     return 0
 }
 
@@ -226,7 +230,7 @@ generate_full_configs() {
     # Server keys
     if [[ -f "/etc/wireguard/${interface_name}.conf" ]]; then
         server_private_key=$(grep "^PrivateKey" "/etc/wireguard/${interface_name}.conf" | cut -d '=' -f 2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        if [[ -z "$server_private_key" ]] || ! validate_key "$server_private_key"; then
+        if [[ -z "$server_private_key" ]] || ! validate_base64_key "$server_private_key" "PrivateKey"; then
             echo "Invalid or missing server private key in /etc/wireguard/${interface_name}.conf, generating new one" >&2
             server_private_key=$(wg genkey)
         fi
@@ -309,7 +313,7 @@ EOF
 
         # Client keys
         client_private_key=$(get_existing_client_key "$client_name")
-        if [[ $? -ne 0 ]] || ! validate_key "$client_private_key"; then
+        if [[ $? -ne 0 ]] || ! validate_base64_key "$client_private_key" "PrivateKey"; then
             echo "Generating new private key for $client_name" >&2
             client_private_key=$(wg genkey)
         fi
@@ -317,9 +321,16 @@ EOF
             echo "Error: Failed to generate public key for $client_name" >&2
             return 1
         }
-        psk=$(wg genpsk)
+
+        # Pre-shared key
+        psk=$(get_existing_psk "$client_name")
+        if [[ $? -ne 0 ]] || ! validate_base64_key "$psk" "PresharedKey"; then
+            echo "Generating new pre-shared key for $client_name" >&2
+            psk=$(wg genpsk)
+        fi
         echo "Client $client_name Private Key: $client_private_key" >&2
         echo "Client $client_name Public Key: $client_public_key" >&2
+        echo "Client $client_name Preshared Key: $psk" >&2
 
         client_inet_ip=$(echo "$client_inet" | cut -d '/' -f 1)
         client_inet6_ip=$(echo "$client_inet6" | cut -d '/' -f 1)
