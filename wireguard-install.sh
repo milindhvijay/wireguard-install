@@ -174,7 +174,7 @@ generate_full_configs() {
         else
             endpoint="$public_endpoint"
         fi
-        echo "DEBUG: Using specified public_endpoint: $endpoint"
+        echo "Using specified public_endpoint: $endpoint"
     else
         host_interface=$(yq e '.local_peer.host_interface' config.yaml)
         if [[ -z "$host_interface" || "$host_interface" == "null" ]]; then
@@ -184,17 +184,16 @@ generate_full_configs() {
         server_ipv6=$(ip -6 addr show "$host_interface" scope global | grep -oP 'inet6 \K[0-9a-f:]+' | grep -v '^fe80:' | head -n 1)
         if [[ -n "$server_ipv6" ]]; then
             endpoint="[$server_ipv6]"
-            echo "DEBUG: Using server IPv6 address: $endpoint"
         else
-            echo "DEBUG: No global IPv6 on $host_interface, falling back to public IP detection..."
+            echo "No global IPv6 on $host_interface, falling back to public IP detection..."
             endpoint=$(wget -qO- https://api6.ipify.org || curl -s https://api6.ipify.org)
             if [[ -n "$endpoint" ]]; then
                 endpoint="[$endpoint]"
-                echo "DEBUG: Using detected IPv6 public IP: $endpoint"
+                echo "Using detected IPv6 public IP: $endpoint"
             else
                 endpoint=$(wget -qO- https://api4.ipify.org || curl -s https://api4.ipify.org)
                 if [[ -n "$endpoint" ]]; then
-                    echo "DEBUG: No IPv6 available, using detected IPv4 public IP: $endpoint"
+                    echo "No IPv6 available, using detected IPv4 public IP: $endpoint"
                 else
                     echo "Error: Could not determine server IP (no IPv6 on $host_interface, no public IPv6 or IPv4 detected)."
                     return 1
@@ -208,17 +207,15 @@ generate_full_configs() {
     if [[ -f "$server_conf" ]]; then
         server_private_key=$(awk '/PrivateKey =/ {print $3}' "$server_conf")
         if [[ -n "$server_private_key" ]]; then
-            echo "DEBUG: Reusing existing server private key from $server_conf: $server_private_key"
         else
-            echo "DEBUG: No PrivateKey found in $server_conf, generating new one."
+            echo "No PrivateKey found in $server_conf, generating new one."
             server_private_key=$(wg genkey)
         fi
     else
-        echo "DEBUG: No existing $server_conf, generating new server private key."
+        echo "No existing $server_conf, generating new server private key."
         server_private_key=$(wg genkey)
     fi
     server_public_key=$(echo "$server_private_key" | wg pubkey)
-    echo "DEBUG: Server public key: $server_public_key"
 
     # Store existing peer PSKs before overwriting
     declare -A existing_psks
@@ -232,7 +229,6 @@ generate_full_configs() {
             fi
         done < "$server_conf"
         for pubkey in "${!existing_psks[@]}"; do
-            echo "DEBUG: Found existing PSK for public key $pubkey: ${existing_psks[$pubkey]}"
         done
     fi
 
@@ -240,7 +236,6 @@ generate_full_configs() {
     umask 077
 
     # Write server config with preserved private key
-    echo "DEBUG: Writing server config to $server_conf"
     cat << EOF > "$server_conf"
 [Interface]
 Address = $server_inet$( [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", $server_inet6" )
@@ -269,28 +264,23 @@ EOF
         if [[ -f "$client_conf" ]]; then
             client_private_key=$(awk '/PrivateKey =/ {print $3}' "$client_conf")
             if [[ -n "$client_private_key" ]]; then
-                echo "DEBUG: Reusing existing client private key for $client_name from $client_conf: $client_private_key"
             else
-                echo "DEBUG: No PrivateKey in $client_conf for $client_name, generating new one."
+                echo "No PrivateKey in $client_conf for $client_name, generating new one."
                 client_private_key=$(wg genkey)
             fi
             client_public_key=$(echo "$client_private_key" | wg pubkey)
-            echo "DEBUG: Client $client_name public key: $client_public_key"
+            echo "Client $client_name public key: $client_public_key"
             if [[ -n "${existing_psks[$client_public_key]}" ]]; then
                 psk="${existing_psks[$client_public_key]}"
-                echo "DEBUG: Reusing existing PSK for $client_name from previous server config: $psk"
             else
-                echo "DEBUG: No existing PSK found for $client_name, generating new one."
+                echo "No existing PSK found for $client_name, generating new one."
                 psk=$(wg genpsk)
             fi
         else
-            echo "DEBUG: No existing config for $client_name, generating new keys."
+            echo "No existing config for $client_name, generating new keys."
             client_private_key=$(wg genkey)
             client_public_key=$(echo "$client_private_key" | wg pubkey)
             psk=$(wg genpsk)
-            echo "DEBUG: New client $client_name private key: $client_private_key"
-            echo "DEBUG: New client $client_name public key: $client_public_key"
-            echo "DEBUG: New PSK for $client_name: $psk"
         fi
 
         # Handle IP assignment
@@ -298,7 +288,7 @@ EOF
         old_server_inet=$(yq e '.local_peer.inet.gateway' "$(dirname "$0")/config.yaml.backup" 2>/dev/null || echo "")
         inet_gateway_changed=false
         if [[ "$inet_enabled" == "true" && "$server_inet" != "$old_server_inet" ]]; then
-            echo "DEBUG: inet gateway changed from '$old_server_inet' to '$server_inet'. Recalculating client IPv4 address."
+            echo "inet gateway changed from '$old_server_inet' to '$server_inet'. Recalculating client IPv4 address."
             inet_gateway_changed=true
         fi
         if [[ "$inet_enabled" == "true" && ( "$client_inet" == "null" || -z "$client_inet" || "$inet_gateway_changed" == "true" ) ]]; then
@@ -309,7 +299,7 @@ EOF
             fi
             used_inets+=("$(echo "$client_inet" | cut -d '/' -f 1)")
             yq e -i ".remote_peer[$i].inet_address = \"$client_inet\"" config.yaml.tmp
-            echo "DEBUG: Assigned new inet address for $client_name: $client_inet"
+            echo "Assigned new inet address for $client_name: $client_inet"
         else
             used_inets+=("$(echo "$client_inet" | cut -d '/' -f 1)")
         fi
@@ -318,7 +308,7 @@ EOF
         old_server_inet6=$(yq e '.local_peer.inet6.gateway' "$(dirname "$0")/config.yaml.backup" 2>/dev/null || echo "")
         inet6_gateway_changed=false
         if [[ "$inet6_enabled" == "true" && "$server_inet6" != "$old_server_inet6" ]]; then
-            echo "DEBUG: inet6 gateway changed from '$old_server_inet6' to '$server_inet6'. Recalculating client IPv6 address."
+            echo "inet6 gateway changed from '$old_server_inet6' to '$server_inet6'. Recalculating client IPv6 address."
             inet6_gateway_changed=true
         fi
         if [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 && ( "$client_inet6" == "null" || -z "$client_inet6" || "$inet6_gateway_changed" == "true" ) ]]; then
@@ -329,14 +319,14 @@ EOF
             fi
             used_inet6s+=("$(echo "$client_inet6" | cut -d '/' -f 1)")
             yq e -i ".remote_peer[$i].inet6_address = \"$client_inet6\"" config.yaml.tmp
-            echo "DEBUG: Assigned new inet6 address for $client_name: $client_inet6"
+            echo "Assigned new inet6 address for $client_name: $client_inet6"
         else
             used_inet6s+=("$(echo "$client_inet6" | cut -d '/' -f 1)")
         fi
 
         client_inet_ip=$(echo "$client_inet" | cut -d '/' -f 1)
         client_inet6_ip=$(echo "$client_inet6" | cut -d '/' -f 1)
-        echo "DEBUG: Adding peer for $client_name to $server_conf"
+        echo "Adding peer for $client_name to $server_conf"
         cat << EOF >> "$server_conf"
 
 [Peer]
@@ -345,7 +335,7 @@ PresharedKey = $psk
 AllowedIPs = ${client_inet_ip}/32$( [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", ${client_inet6_ip}/128" )
 EOF
 
-        echo "DEBUG: Writing client config for $client_name to $client_conf"
+        echo "Writing client config for $client_name to $client_conf"
         cat << EOF > "$client_conf"
 [Interface]
 Address = $client_inet$( [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", $client_inet6" )
@@ -393,13 +383,13 @@ generate_client_configs() {
     if [[ -f "$server_conf" ]]; then
         server_private_key=$(awk '/PrivateKey =/ {print $3}' "$server_conf")
         if [[ -n "$server_private_key" ]]; then
-            echo "DEBUG: Reusing server private key from $server_conf: $server_private_key"
+            echo "Reusing server private key from $server_conf: $server_private_key"
         else
             echo "Error: No PrivateKey found in $server_conf. Cannot proceed without server keys."
             return 1
         fi
         server_public_key=$(echo "$server_private_key" | wg pubkey)
-        echo "DEBUG: Server public key: $server_public_key"
+        echo "Server public key: $server_public_key"
     else
         echo "Error: Server config $server_conf not found. Please run full setup first."
         return 1
@@ -410,11 +400,11 @@ generate_client_configs() {
     old_server_inet6=$(yq e '.local_peer.inet6.gateway' "$(dirname "$0")/config.yaml.backup" 2>/dev/null || echo "")
     gateway_changed=false
     if [[ "$inet_enabled" == "true" && "$server_inet" != "$old_server_inet" ]]; then
-        echo "DEBUG: inet gateway changed from '$old_server_inet' to '$server_inet'. Recalculating client IPs."
+        echo "inet gateway changed from '$old_server_inet' to '$server_inet'. Recalculating client IPs."
         gateway_changed=true
     fi
     if [[ "$inet6_enabled" == "true" && "$server_inet6" != "$old_server_inet6" ]]; then
-        echo "DEBUG: inet6 gateway changed from '$old_server_inet6' to '$server_inet6'. Recalculating client IPs."
+        echo "inet6 gateway changed from '$old_server_inet6' to '$server_inet6'. Recalculating client IPs."
         gateway_changed=true
     fi
 
@@ -426,7 +416,7 @@ generate_client_configs() {
         else
             endpoint="$public_endpoint"
         fi
-        echo "DEBUG: Using specified public_endpoint: $endpoint"
+        echo "Using specified public_endpoint: $endpoint"
     else
         host_interface=$(yq e '.local_peer.host_interface' config.yaml)
         if [[ -z "$host_interface" || "$host_interface" == "null" ]]; then
@@ -436,17 +426,17 @@ generate_client_configs() {
         server_ipv6=$(ip -6 addr show "$host_interface" scope global | grep -oP 'inet6 \K[0-9a-f:]+' | grep -v '^fe80:' | head -n 1)
         if [[ -n "$server_ipv6" ]]; then
             endpoint="[$server_ipv6]"
-            echo "DEBUG: Using server IPv6 address: $endpoint"
+            echo "Using server IPv6 address: $endpoint"
         else
-            echo "DEBUG: No global IPv6 on $host_interface, falling back to public IP detection..."
+            echo "No global IPv6 on $host_interface, falling back to public IP detection..."
             endpoint=$(wget -qO- https://api6.ipify.org || curl -s https://api6.ipify.org)
             if [[ -n "$endpoint" ]]; then
                 endpoint="[$endpoint]"
-                echo "DEBUG: Using detected IPv6 public IP: $endpoint"
+                echo "Using detected IPv6 public IP: $endpoint"
             else
                 endpoint=$(wget -qO- https://api4.ipify.org || curl -s https://api4.ipify.org)
                 if [[ -n "$endpoint" ]]; then
-                    echo "DEBUG: No IPv6 available, using detected IPv4 public IP: $endpoint"
+                    echo "No IPv6 available, using detected IPv4 public IP: $endpoint"
                 else
                     echo "Error: Could not determine server IP (no IPv6 on $host_interface, no public IPv6 or IPv4 detected)."
                     return 1
@@ -483,32 +473,32 @@ generate_client_configs() {
         if [[ -f "$client_conf" ]]; then
             client_private_key=$(awk '/PrivateKey =/ {print $3}' "$client_conf")
             if [[ -n "$client_private_key" ]]; then
-                echo "DEBUG: Reusing existing client private key for $client_name from $client_conf: $client_private_key"
+                echo "Reusing existing client private key for $client_name from $client_conf: $client_private_key"
             else
-                echo "DEBUG: No PrivateKey in $client_conf for $client_name, generating new one."
+                echo "No PrivateKey in $client_conf for $client_name, generating new one."
                 client_private_key=$(wg genkey)
             fi
             client_public_key=$(echo "$client_private_key" | wg pubkey)
-            echo "DEBUG: Client $client_name public key: $client_public_key"
+            echo "Client $client_name public key: $client_public_key"
             psk=$(awk -v pubkey="$client_public_key" '
                 $1 == "PublicKey" && $3 == pubkey {found=1}
                 found && $1 == "PresharedKey" {print $3; exit}
                 $1 == "[Peer]" {found=0}
             ' "$server_conf")
             if [[ -n "$psk" ]]; then
-                echo "DEBUG: Reusing existing PSK for $client_name: $psk"
+                echo "Reusing existing PSK for $client_name: $psk"
             else
-                echo "DEBUG: No matching PSK found for $client_name in $server_conf, generating new one."
+                echo "No matching PSK found for $client_name in $server_conf, generating new one."
                 psk=$(wg genpsk)
             fi
         else
-            echo "DEBUG: No existing config for $client_name, generating new keys."
+            echo "No existing config for $client_name, generating new keys."
             client_private_key=$(wg genkey)
             client_public_key=$(echo "$client_private_key" | wg pubkey)
             psk=$(wg genpsk)
-            echo "DEBUG: New client $client_name private key: $client_private_key"
-            echo "DEBUG: New client $client_name public key: $client_public_key"
-            echo "DEBUG: New PSK for $client_name: $psk"
+            echo "New client $client_name private key: $client_private_key"
+            echo "New client $client_name public key: $client_public_key"
+            echo "New PSK for $client_name: $psk"
         fi
 
         # Recalculate IPs if gateway changed or missing
@@ -516,7 +506,7 @@ generate_client_configs() {
         old_server_inet=$(yq e '.local_peer.inet.gateway' "$(dirname "$0")/config.yaml.backup" 2>/dev/null || echo "")
         inet_gateway_changed=false
         if [[ "$inet_enabled" == "true" && "$server_inet" != "$old_server_inet" ]]; then
-            echo "DEBUG: inet gateway changed from '$old_server_inet' to '$server_inet'. Recalculating client IPv4 address."
+            echo "inet gateway changed from '$old_server_inet' to '$server_inet'. Recalculating client IPv4 address."
             inet_gateway_changed=true
         fi
         if [[ "$inet_enabled" == "true" && ( "$client_inet" == "null" || -z "$client_inet" || "$inet_gateway_changed" == "true" ) ]]; then
@@ -526,14 +516,14 @@ generate_client_configs() {
                 return 1
             fi
             used_inets+=("$(echo "$client_inet" | cut -d '/' -f 1)")
-            echo "DEBUG: Assigned new inet address for $client_name: $client_inet"
+            echo "Assigned new inet address for $client_name: $client_inet"
         fi
 
         client_inet6=$(yq e ".remote_peer[$i].inet6_address" config.yaml)
         old_server_inet6=$(yq e '.local_peer.inet6.gateway' "$(dirname "$0")/config.yaml.backup" 2>/dev/null || echo "")
         inet6_gateway_changed=false
         if [[ "$inet6_enabled" == "true" && "$server_inet6" != "$old_server_inet6" ]]; then
-            echo "DEBUG: inet6 gateway changed from '$old_server_inet6' to '$server_inet6'. Recalculating client IPv6 address."
+            echo "inet6 gateway changed from '$old_server_inet6' to '$server_inet6'. Recalculating client IPv6 address."
             inet6_gateway_changed=true
         fi
         if [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 && ( "$client_inet6" == "null" || -z "$client_inet6" || "$inet6_gateway_changed" == "true" ) ]]; then
@@ -543,7 +533,7 @@ generate_client_configs() {
                 return 1
             fi
             used_inet6s+=("$(echo "$client_inet6" | cut -d '/' -f 1)")
-            echo "DEBUG: Assigned new inet6 address for $client_name: $client_inet6"
+            echo "Assigned new inet6 address for $client_name: $client_inet6"
         fi
 
         yq e -i ".remote_peer[$i].inet_address = \"$client_inet\"" config.yaml.tmp
@@ -558,12 +548,12 @@ generate_client_configs() {
         # Handle name changes
         old_name=$(yq e ".remote_peer[$i].name" "$(dirname "$0")/config.yaml.backup" 2>/dev/null || echo "")
         if [[ "$old_name" != "$client_name" && -n "$old_name" ]]; then
-            echo "DEBUG: Client name changed from $old_name to $client_name, removing old config."
+            echo "Client name changed from $old_name to $client_name, removing old config."
             rm -f "$(dirname "$0")/wireguard-configs/${old_name}-${interface_name}.conf"
         fi
 
         # Update server config
-        echo "DEBUG: Updating server config $server_conf for $client_name"
+        echo "Updating server config $server_conf for $client_name"
         temp_file=$(mktemp)
         awk -v ip="$client_inet_ip" '
         BEGIN { in_section = 0; buffer = ""; need_blank = 0 }
@@ -597,7 +587,7 @@ generate_client_configs() {
             sed -i -e :a -e '/^\n*$/{$d;N;};/\n$/ba' "$server_conf"
             echo "" >> "$server_conf"
         fi
-        echo "DEBUG: Adding peer entry for $client_name to $server_conf"
+        echo "Adding peer entry for $client_name to $server_conf"
         cat << EOF >> "$server_conf"
 [Peer]
 PublicKey = $client_public_key
@@ -606,7 +596,7 @@ AllowedIPs = $client_allowed_ips_combined
 EOF
 
         # Write client config
-        echo "DEBUG: Writing client config for $client_name to $client_conf"
+        echo "Writing client config for $client_name to $client_conf"
         cat << EOF > "$client_conf"
 [Interface]
 Address = $client_inet$( [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", $client_inet6" )
@@ -1253,13 +1243,13 @@ else
                 client_private_key=$(awk '/PrivateKey =/ {print $3}' "$client_conf")
                 if [[ -n "$client_private_key" ]]; then
                     client_public_key=$(echo "$client_private_key" | wg pubkey)
-                    echo "DEBUG: Client $client_name public key to remove: $client_public_key"
+                    echo "Client $client_name public key to remove: $client_public_key"
                 else
                     echo "Warning: No PrivateKey found in $client_conf, cannot precisely remove from server config."
                     client_public_key=""
                 fi
             else
-                echo "DEBUG: No client config file $client_conf found, checking server config for public key."
+                echo "No client config file $client_conf found, checking server config for public key."
                 client_public_key=""
             fi
 
@@ -1273,7 +1263,7 @@ else
                         $0 ~ ip { print pubkey; exit }
                     ' "$server_conf")
                     if [[ -n "$client_public_key" ]]; then
-                        echo "DEBUG: Found public key $client_public_key for $client_name in $server_conf using IP $inet_ip"
+                        echo "Found public key $client_public_key for $client_name in $server_conf using IP $inet_ip"
                     else
                         echo "Warning: Could not determine public key for $client_name from $server_conf."
                     fi
@@ -1301,7 +1291,7 @@ else
 
             # Remove client peer entry from server config if public key is known
             if [[ -n "$client_public_key" && -f "$server_conf" ]]; then
-                echo "DEBUG: Removing peer entry for $client_name from $server_conf"
+                echo "Removing peer entry for $client_name from $server_conf"
                 temp_file=$(mktemp)
                 awk -v pubkey="$client_public_key" '
                 BEGIN { in_section = 0; buffer = ""; need_blank = 0 }
