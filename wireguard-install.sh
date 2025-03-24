@@ -165,28 +165,56 @@ cleanup_conflicting_interfaces() {
     done
 }
 
-extract_client_keys() {
-    local conf_file="$1"
-    if [[ -f "$conf_file" ]]; then
-        client_private_key=$(grep -i "PrivateKey" "$conf_file" | cut -d '=' -f 2 | tr -d ' ')
-        client_public_key=$(grep -i "PublicKey" "$conf_file" | cut -d '=' -f 2 | tr -d ' ')
-        psk=$(grep -i "PresharedKey" "$conf_file" | cut -d '=' -f 2 | tr -d ' ')
-        if [[ -n "$client_private_key" && -n "$client_public_key" && -n "$psk" ]]; then
-            echo "Reusing keys from $conf_file"
-            return 0
+validate_wg_key() {
+    local key="$1"
+    local type="$2"  # "private" or "public"
+    # WireGuard keys are 32 bytes (44 chars in base64, including padding)
+    if [[ ${#key} -ne 44 || ! "$key" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
+        echo "Error: $type key '$key' is invalid (wrong length or format)."
+        return 1
+    fi
+    if [[ "$type" == "private" ]]; then
+        # Test if it can generate a public key
+        if ! echo "$key" | wg pubkey >/dev/null 2>&1; then
+            echo "Error: Private key '$key' cannot generate a public key."
+            return 1
         fi
     fi
-    return 1
+    return 0
 }
 
 extract_server_keys() {
     local conf_file="$1"
     if [[ -f "$conf_file" ]]; then
-        server_private_key=$(grep -i "PrivateKey" "$conf_file" | cut -d '=' -f 2 | tr -d ' ')
+        # Extract private key, preserving padding
+        server_private_key=$(grep -i "PrivateKey" "$conf_file" | cut -d '=' -f 2- | sed 's/^[ \t]*//;s/[ \t]*$//')
         if [[ -n "$server_private_key" ]]; then
-            server_public_key=$(echo "$server_private_key" | wg pubkey)
-            echo "Reusing server keys from $conf_file"
-            return 0
+            if validate_wg_key "$server_private_key" "private"; then
+                server_public_key=$(echo "$server_private_key" | wg pubkey)
+                echo "Reusing server keys from $conf_file"
+                return 0
+            else
+                echo "Warning: Invalid server private key in $conf_file. Generating new keys."
+            fi
+        fi
+    fi
+    # If no valid key is found, return failure
+    return 1
+}
+
+extract_client_keys() {
+    local conf_file="$1"
+    if [[ -f "$conf_file" ]]; then
+        client_private_key=$(grep -i "PrivateKey" "$conf_file" | cut -d '=' -f 2- | sed 's/^[ \t]*//;s/[ \t]*$//')
+        client_public_key=$(grep -i "PublicKey" "$conf_file" | cut -d '=' -f 2- | sed 's/^[ \t]*//;s/[ \t]*$//')
+        psk=$(grep -i "PresharedKey" "$conf_file" | cut -d '=' -f 2- | sed 's/^[ \t]*//;s/[ \t]*$//')
+        if [[ -n "$client_private_key" && -n "$client_public_key" && -n "$psk" ]]; then
+            if validate_wg_key "$client_private_key" "private" && validate_wg_key "$client_public_key" "public"; then
+                echo "Reusing keys from $conf_file"
+                return 0
+            else
+                echo "Warning: Invalid keys in $conf_file. Generating new keys."
+            fi
         fi
     fi
     return 1
@@ -218,11 +246,11 @@ generate_full_configs() {
     original_umask=$(umask)
     umask 077
 
-    # Try to reuse server keys from existing config, otherwise generate new ones
     server_conf="/etc/wireguard/${interface_name}.conf"
     if ! extract_server_keys "$server_conf"; then
         server_private_key=$(wg genkey)
         server_public_key=$(echo "$server_private_key" | wg pubkey)
+        echo "Generated new server keys."
     fi
 
     cat << EOF > /etc/wireguard/"${interface_name}.conf"
@@ -240,7 +268,7 @@ EOF
     mkdir -p "$(dirname "$0")/wireguard-configs"
     rollback_actions+=("rm -rf \"$(dirname "$0")/wireguard-configs\"")
 
-    # [Public endpoint logic remains unchanged]
+    # [Public endpoint logic remains unchanged, add error handling if needed]
 
     local -a used_inets=("$server_inet_ip")
     local -a used_inet6s=("$server_inet6_ip")
@@ -259,7 +287,6 @@ EOF
         client_allowed_ips=$(yq e ".remote_peer[$i].allowed_ips" config.yaml)
         client_persistent_keepalive=$(yq e ".remote_peer[$i].persistent_keepalive" config.yaml)
 
-        # Reuse or assign IP addresses
         client_inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
         if [[ "$inet_enabled" == "true" && ( "$client_inet" == "null" || -z "$client_inet" ) ]]; then
             client_inet=$(find_next_inet "$base_inet" "$server_inet_mask" "${used_inets[@]}")
@@ -282,7 +309,6 @@ EOF
             yq e -i ".remote_peer[$i].inet6_address = \"$client_inet6\"" config.yaml.tmp
         fi
 
-        # Try to reuse client keys from existing config file, otherwise generate new ones
         client_conf="$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
         if ! extract_client_keys "$client_conf"; then
             client_private_key=$(wg genkey)
