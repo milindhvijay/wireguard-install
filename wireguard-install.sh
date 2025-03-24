@@ -501,8 +501,8 @@ generate_client_configs() {
 
         # Recalculate IPs if gateway changed or missing
         client_inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
-        if [[ "$inet_enabled" == "true" && ( "$client_inet" == "null" || -z "$client_inet" || "$gateway_changed" == "true" ) ]]; then
-            client_inet=$(find_next_inet "$base_inet" "$server_inet_mask" "${used_inets[@]}")
+        if [[ "$inet_enabled" == "true" && ( "$client_inet" == "null" || -z "$client_inet" ) ]]; then
+            client_inet=$(find_next_inet "$base_inet" "$server_inet_mask" "${used_inet[@]}")
             if [[ $? -ne 0 ]]; then
                 echo "$client_inet"
                 return 1
