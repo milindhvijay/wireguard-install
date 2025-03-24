@@ -165,61 +165,6 @@ cleanup_conflicting_interfaces() {
     done
 }
 
-validate_wg_key() {
-    local key="$1"
-    local type="$2"  # "private" or "public"
-    # WireGuard keys are 32 bytes (44 chars in base64, including padding)
-    if [[ ${#key} -ne 44 || ! "$key" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
-        echo "Error: $type key '$key' is invalid (wrong length or format)."
-        return 1
-    fi
-    if [[ "$type" == "private" ]]; then
-        # Test if it can generate a public key
-        if ! echo "$key" | wg pubkey >/dev/null 2>&1; then
-            echo "Error: Private key '$key' cannot generate a public key."
-            return 1
-        fi
-    fi
-    return 0
-}
-
-extract_server_keys() {
-    local conf_file="$1"
-    if [[ -f "$conf_file" ]]; then
-        # Extract private key, preserving padding
-        server_private_key=$(grep -i "PrivateKey" "$conf_file" | cut -d '=' -f 2- | sed 's/^[ \t]*//;s/[ \t]*$//')
-        if [[ -n "$server_private_key" ]]; then
-            if validate_wg_key "$server_private_key" "private"; then
-                server_public_key=$(echo "$server_private_key" | wg pubkey)
-                echo "Reusing server keys from $conf_file"
-                return 0
-            else
-                echo "Warning: Invalid server private key in $conf_file. Generating new keys."
-            fi
-        fi
-    fi
-    # If no valid key is found, return failure
-    return 1
-}
-
-extract_client_keys() {
-    local conf_file="$1"
-    if [[ -f "$conf_file" ]]; then
-        client_private_key=$(grep -i "PrivateKey" "$conf_file" | cut -d '=' -f 2- | sed 's/^[ \t]*//;s/[ \t]*$//')
-        client_public_key=$(grep -i "PublicKey" "$conf_file" | cut -d '=' -f 2- | sed 's/^[ \t]*//;s/[ \t]*$//')
-        psk=$(grep -i "PresharedKey" "$conf_file" | cut -d '=' -f 2- | sed 's/^[ \t]*//;s/[ \t]*$//')
-        if [[ -n "$client_private_key" && -n "$client_public_key" && -n "$psk" ]]; then
-            if validate_wg_key "$client_private_key" "private" && validate_wg_key "$client_public_key" "public"; then
-                echo "Reusing keys from $conf_file"
-                return 0
-            else
-                echo "Warning: Invalid keys in $conf_file. Generating new keys."
-            fi
-        fi
-    fi
-    return 1
-}
-
 generate_full_configs() {
     if ! check_duplicate_client_names; then
         return 1
@@ -246,12 +191,8 @@ generate_full_configs() {
     original_umask=$(umask)
     umask 077
 
-    server_conf="/etc/wireguard/${interface_name}.conf"
-    if ! extract_server_keys "$server_conf"; then
-        server_private_key=$(wg genkey)
-        server_public_key=$(echo "$server_private_key" | wg pubkey)
-        echo "Generated new server keys."
-    fi
+    server_private_key=$(wg genkey)
+    server_public_key=$(echo "$server_private_key" | wg pubkey)
 
     cat << EOF > /etc/wireguard/"${interface_name}.conf"
 [Interface]
@@ -268,7 +209,24 @@ EOF
     mkdir -p "$(dirname "$0")/wireguard-configs"
     rollback_actions+=("rm -rf \"$(dirname "$0")/wireguard-configs\"")
 
-    # [Public endpoint logic remains unchanged, add error handling if needed]
+    if [[ -n "$public_endpoint" && "$public_endpoint" != "null" ]]; then
+        if [[ "$public_endpoint" =~ : && ! "$public_endpoint" =~ \. ]]; then
+            endpoint="[$public_endpoint]"
+        else
+            endpoint="$public_endpoint"
+        fi
+    else
+        endpoint=$(wget -qO- https://api6.ipify.org || curl -s https://api6.ipify.org)
+        if [[ -n "$endpoint" ]]; then
+            endpoint="[$endpoint]"
+        else
+            endpoint=$(wget -qO- https://api4.ipify.org || curl -s https://api4.ipify.org)
+            if [[ -z "$endpoint" ]]; then
+                echo "Error: Could not auto-detect public IP (neither inet6 nor inet)."
+                return 1
+            fi
+        fi
+    fi
 
     local -a used_inets=("$server_inet_ip")
     local -a used_inet6s=("$server_inet6_ip")
@@ -287,8 +245,7 @@ EOF
         client_allowed_ips=$(yq e ".remote_peer[$i].allowed_ips" config.yaml)
         client_persistent_keepalive=$(yq e ".remote_peer[$i].persistent_keepalive" config.yaml)
 
-        client_inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
-        if [[ "$inet_enabled" == "true" && ( "$client_inet" == "null" || -z "$client_inet" ) ]]; then
+        if [[ "$inet_enabled" == "true" ]]; then
             client_inet=$(find_next_inet "$base_inet" "$server_inet_mask" "${used_inets[@]}")
             if [[ $? -ne 0 ]]; then
                 echo "$client_inet"
@@ -298,8 +255,7 @@ EOF
             yq e -i ".remote_peer[$i].inet_address = \"$client_inet\"" config.yaml.tmp
         fi
 
-        client_inet6=$(yq e ".remote_peer[$i].inet6_address" config.yaml)
-        if [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 && ( "$client_inet6" == "null" || -z "$client_inet6" ) ]]; then
+        if [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]]; then
             client_inet6=$(find_next_inet6 "$base_inet6" "$server_inet6_mask" "${used_inet6s[@]}")
             if [[ $? -ne 0 ]]; then
                 echo "$client_inet6"
@@ -309,12 +265,9 @@ EOF
             yq e -i ".remote_peer[$i].inet6_address = \"$client_inet6\"" config.yaml.tmp
         fi
 
-        client_conf="$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
-        if ! extract_client_keys "$client_conf"; then
-            client_private_key=$(wg genkey)
-            client_public_key=$(echo "$client_private_key" | wg pubkey)
-            psk=$(wg genpsk)
-        fi
+        client_private_key=$(wg genkey)
+        client_public_key=$(echo "$client_private_key" | wg pubkey)
+        psk=$(wg genpsk)
 
         client_inet_ip=$(echo "$client_inet" | cut -d '/' -f 1)
         client_inet6_ip=$(echo "$client_inet6" | cut -d '/' -f 1)
@@ -326,7 +279,7 @@ PresharedKey = $psk
 AllowedIPs = ${client_inet_ip}/32$( [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", ${client_inet6_ip}/128" )
 EOF
 
-        cat << EOF > "$client_conf"
+        cat << EOF > "$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
 [Interface]
 Address = $client_inet$( [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", $client_inet6" )
 DNS = $client_dns
@@ -340,7 +293,7 @@ AllowedIPs = $client_allowed_ips
 Endpoint = $endpoint:$port
 $( [[ "$client_persistent_keepalive" != "null" && -n "$client_persistent_keepalive" ]] && echo "PersistentKeepalive = $client_persistent_keepalive" )
 EOF
-        chmod 600 "$client_conf"
+        chmod 600 "$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
     done
 
     umask "$original_umask"
@@ -367,15 +320,27 @@ generate_client_configs() {
     server_inet6_ip=$(echo "$server_inet6" | cut -d '/' -f 1)
     server_inet6_mask=$(echo "$server_inet6" | cut -d '/' -f 2)
     base_inet6=$(echo "$server_inet6_ip" | sed 's/:[0-9a-f]*$//')
+    server_public_key=$(wg show "$interface_name" public-key)
 
-    # Get server public key from existing config
-    server_conf="/etc/wireguard/${interface_name}.conf"
-    if ! extract_server_keys "$server_conf"; then
-        echo "Error: Could not extract server keys from $server_conf and no keys in config.yaml."
-        return 1
+    public_endpoint=$(yq e '.local_peer.public_endpoint' config.yaml)
+    if [[ -n "$public_endpoint" && "$public_endpoint" != "null" ]]; then
+        if [[ "$public_endpoint" =~ : && ! "$public_endpoint" =~ \. ]]; then
+            endpoint="[$public_endpoint]"
+        else
+            endpoint="$public_endpoint"
+        fi
+    else
+        endpoint=$(wget -qO- https://api6.ipify.org || curl -s https://api6.ipify.org)
+        if [[ -n "$endpoint" ]]; then
+            endpoint="[$endpoint]"
+        else
+            endpoint=$(wget -qO- https://api4.ipify.org || curl -s https://api4.ipify.org)
+            if [[ -z "$endpoint" ]]; then
+                echo "Error: Could not auto-detect public IP (neither inet6 nor inet)."
+                return 1
+            fi
+        fi
     fi
-
-    # [Public endpoint logic remains unchanged]
 
     cp config.yaml config.yaml.tmp
     mkdir -p "$(dirname "$0")/wireguard-configs"
@@ -400,7 +365,6 @@ generate_client_configs() {
         client_allowed_ips=$(yq e ".remote_peer[$i].allowed_ips" config.yaml)
         client_persistent_keepalive=$(yq e ".remote_peer[$i].persistent_keepalive" config.yaml)
 
-        # Reuse or assign IP addresses
         client_inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
         if [[ "$inet_enabled" == "true" && ( "$client_inet" == "null" || -z "$client_inet" ) ]]; then
             client_inet=$(find_next_inet "$base_inet" "$server_inet_mask" "${used_inets[@]}")
@@ -426,29 +390,74 @@ generate_client_configs() {
             yq e -i ".remote_peer[$i].inet6_address = \"$client_inet6\"" config.yaml.tmp
         fi
 
-        # Try to reuse client keys from existing config file, otherwise generate new ones
-        client_conf="$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
-        old_name=$(yq e ".remote_peer[$i].name" "$(dirname "$0")/config.yaml.backup")
-        old_client_conf="$(dirname "$0")/wireguard-configs/${old_name}-${interface_name}.conf"
-        if [[ "$old_name" != "$client_name" && -f "$old_client_conf" ]]; then
-            if extract_client_keys "$old_client_conf"; then
-                rm -f "$old_client_conf"
-            else
-                client_private_key=$(wg genkey)
-                client_public_key=$(echo "$client_private_key" | wg pubkey)
-                psk=$(wg genpsk)
-            fi
-        elif ! extract_client_keys "$client_conf"; then
-            client_private_key=$(wg genkey)
-            client_public_key=$(echo "$client_private_key" | wg pubkey)
-            psk=$(wg genpsk)
-        fi
+        client_private_key=$(wg genkey)
+        client_public_key=$(echo "$client_private_key" | wg pubkey)
+        psk=$(wg genpsk)
 
         client_inet_ip=$(echo "$client_inet" | cut -d '/' -f 1)
         client_inet6_ip=$(echo "$client_inet6" | cut -d '/' -f 1)
         client_allowed_ips_combined="${client_inet_ip}/32$( [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", ${client_inet6_ip}/128" )"
 
-        # [Rest of the function for updating server and client configs remains unchanged]
+        old_name=$(yq e ".remote_peer[$i].name" "$(dirname "$0")/config.yaml.backup")
+        if [[ "$old_name" != "$client_name" && -n "$old_name" ]]; then
+            rm -f "$(dirname "$0")/wireguard-configs/${old_name}-${interface_name}.conf"
+        fi
+
+        temp_file=$(mktemp)
+        awk -v ip="$client_inet_ip" '
+        BEGIN { in_section = 0; buffer = ""; need_blank = 0 }
+        /^\[(Interface|Peer)\]$/ {
+            if (in_section && keep) {
+                if (need_blank) { print "" }
+                print buffer
+                need_blank = 1
+            }
+            in_section = 1; keep = ($1 == "[Interface]" ? 1 : 0); buffer = $0 "\n"; next
+        }
+        in_section && /AllowedIPs =/ {
+            if ($0 ~ ip) { keep = 0 } else { keep = 1 }
+            buffer = buffer $0 "\n"; next
+        }
+        in_section && /^$/ {
+            if (keep) {
+                if (need_blank) { print "" }
+                print buffer
+                need_blank = 1
+            }
+            in_section = 0; buffer = ""; next
+        }
+        in_section { buffer = buffer $0 "\n"; next }
+        END { if (in_section && keep) { if (need_blank) { print "" } print buffer } }
+        ' /etc/wireguard/"${interface_name}.conf" > "$temp_file"
+        mv "$temp_file" /etc/wireguard/"${interface_name}.conf"
+        chmod 600 /etc/wireguard/"${interface_name}.conf"
+
+        if [[ -s /etc/wireguard/"${interface_name}.conf" ]]; then
+            sed -i -e :a -e '/^\n*$/{$d;N;};/\n$/ba' /etc/wireguard/"${interface_name}.conf"
+            echo "" >> /etc/wireguard/"${interface_name}.conf"
+        fi
+        cat << EOF >> /etc/wireguard/"${interface_name}.conf"
+[Peer]
+PublicKey = $client_public_key
+PresharedKey = $psk
+AllowedIPs = $client_allowed_ips_combined
+EOF
+
+        cat << EOF > "$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
+[Interface]
+Address = $client_inet$( [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", $client_inet6" )
+DNS = $client_dns
+PrivateKey = $client_private_key
+MTU = $client_mtu
+
+[Peer]
+PublicKey = $server_public_key
+PresharedKey = $psk
+AllowedIPs = $client_allowed_ips
+Endpoint = $endpoint:$port
+$( [[ "$client_persistent_keepalive" != "null" && -n "$client_persistent_keepalive" ]] && echo "PersistentKeepalive = $client_persistent_keepalive" )
+EOF
+        chmod 600 "$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
     done
 
     umask "$original_umask"
