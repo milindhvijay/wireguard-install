@@ -208,17 +208,14 @@ generate_full_configs() {
     if [[ -f "$server_conf" ]]; then
         server_private_key=$(awk '/PrivateKey =/ {print $3}' "$server_conf")
         if [[ -n "$server_private_key" ]]; then
-            echo "DEBUG: Reusing existing server private key from $server_conf: $server_private_key"
+            : # No DEBUG output
         else
-            echo "DEBUG: No PrivateKey found in $server_conf, generating new one."
             server_private_key=$(wg genkey)
         fi
     else
-        echo "DEBUG: No existing $server_conf, generating new server private key."
         server_private_key=$(wg genkey)
     fi
     server_public_key=$(echo "$server_private_key" | wg pubkey)
-    echo "DEBUG: Server public key: $server_public_key"
 
     # Store existing peer PSKs before overwriting
     declare -A existing_psks
@@ -231,9 +228,6 @@ generate_full_configs() {
                 unset current_pubkey
             fi
         done < "$server_conf"
-        for pubkey in "${!existing_psks[@]}"; do
-            echo "DEBUG: Found existing PSK for public key $pubkey: ${existing_psks[$pubkey]}"
-        done
     fi
 
     original_umask=$(umask)
@@ -269,28 +263,20 @@ EOF
         if [[ -f "$client_conf" ]]; then
             client_private_key=$(awk '/PrivateKey =/ {print $3}' "$client_conf")
             if [[ -n "$client_private_key" ]]; then
-                echo "DEBUG: Reusing existing client private key for $client_name from $client_conf: $client_private_key"
+                : # No DEBUG output
             else
-                echo "DEBUG: No PrivateKey in $client_conf for $client_name, generating new one."
                 client_private_key=$(wg genkey)
             fi
             client_public_key=$(echo "$client_private_key" | wg pubkey)
-            echo "DEBUG: Client $client_name public key: $client_public_key"
             if [[ -n "${existing_psks[$client_public_key]}" ]]; then
                 psk="${existing_psks[$client_public_key]}"
-                echo "DEBUG: Reusing existing PSK for $client_name from previous server config: $psk"
             else
-                echo "DEBUG: No existing PSK found for $client_name, generating new one."
                 psk=$(wg genpsk)
             fi
         else
-            echo "DEBUG: No existing config for $client_name, generating new keys."
             client_private_key=$(wg genkey)
             client_public_key=$(echo "$client_private_key" | wg pubkey)
             psk=$(wg genpsk)
-            echo "DEBUG: New client $client_name private key: $client_private_key"
-            echo "DEBUG: New client $client_name public key: $client_public_key"
-            echo "DEBUG: New PSK for $client_name: $psk"
         fi
 
         # Handle IP assignment
@@ -393,13 +379,12 @@ generate_client_configs() {
     if [[ -f "$server_conf" ]]; then
         server_private_key=$(awk '/PrivateKey =/ {print $3}' "$server_conf")
         if [[ -n "$server_private_key" ]]; then
-            echo "DEBUG: Reusing server private key from $server_conf: $server_private_key"
+            : # No DEBUG output
         else
             echo "Error: No PrivateKey found in $server_conf. Cannot proceed without server keys."
             return 1
         fi
         server_public_key=$(echo "$server_private_key" | wg pubkey)
-        echo "DEBUG: Server public key: $server_public_key"
     else
         echo "Error: Server config $server_conf not found. Please run full setup first."
         return 1
@@ -483,32 +468,25 @@ generate_client_configs() {
         if [[ -f "$client_conf" ]]; then
             client_private_key=$(awk '/PrivateKey =/ {print $3}' "$client_conf")
             if [[ -n "$client_private_key" ]]; then
-                echo "DEBUG: Reusing existing client private key for $client_name from $client_conf: $client_private_key"
+                : # No DEBUG output
             else
-                echo "DEBUG: No PrivateKey in $client_conf for $client_name, generating new one."
                 client_private_key=$(wg genkey)
             fi
             client_public_key=$(echo "$client_private_key" | wg pubkey)
-            echo "DEBUG: Client $client_name public key: $client_public_key"
             psk=$(awk -v pubkey="$client_public_key" '
                 $1 == "PublicKey" && $3 == pubkey {found=1}
                 found && $1 == "PresharedKey" {print $3; exit}
                 $1 == "[Peer]" {found=0}
             ' "$server_conf")
             if [[ -n "$psk" ]]; then
-                echo "DEBUG: Reusing existing PSK for $client_name: $psk"
+                : # No DEBUG output
             else
-                echo "DEBUG: No matching PSK found for $client_name in $server_conf, generating new one."
                 psk=$(wg genpsk)
             fi
         else
-            echo "DEBUG: No existing config for $client_name, generating new keys."
             client_private_key=$(wg genkey)
             client_public_key=$(echo "$client_private_key" | wg pubkey)
             psk=$(wg genpsk)
-            echo "DEBUG: New client $client_name private key: $client_private_key"
-            echo "DEBUG: New client $client_name public key: $client_public_key"
-            echo "DEBUG: New PSK for $client_name: $psk"
         fi
 
         # Recalculate IPs if gateway changed or missing
@@ -802,7 +780,7 @@ if [[ ! -e /etc/wireguard/${interface_name}.conf ]]; then
 
     if [[ "$inet_enabled" == "true" ]]; then
         vpn_inet_subnet=$(ipcalc "$server_inet" | grep -oP 'Network:\s*\K[\d.]+/\d+')
-        if [[ -z "$ loosevpn_inet_subnet" ]]; then
+        if [[ -z "$vpn_inet_subnet" ]]; then
             echo "Error: Failed to calculate inet subnet using ipcalc for $server_inet."
             exit 1
         fi
@@ -1253,7 +1231,6 @@ else
                 client_private_key=$(awk '/PrivateKey =/ {print $3}' "$client_conf")
                 if [[ -n "$client_private_key" ]]; then
                     client_public_key=$(echo "$client_private_key" | wg pubkey)
-                    echo "DEBUG: Client $client_name public key to remove: $client_public_key"
                 else
                     echo "Warning: No PrivateKey found in $client_conf, cannot precisely remove from server config."
                     client_public_key=""
@@ -1273,7 +1250,7 @@ else
                         $0 ~ ip { print pubkey; exit }
                     ' "$server_conf")
                     if [[ -n "$client_public_key" ]]; then
-                        echo "DEBUG: Found public key $client_public_key for $client_name in $server_conf using IP $inet_ip"
+                        : # No DEBUG output
                     else
                         echo "Warning: Could not determine public key for $client_name from $server_conf."
                     fi
