@@ -167,6 +167,41 @@ generate_full_configs() {
     server_inet6_mask=$(echo "$server_inet6" | cut -d '/' -f 2)
     base_inet6=$(echo "$server_inet6_ip" | sed 's/:[0-9a-f]*$//')
 
+    # Determine endpoint, defaulting to server's IPv6 address if public_endpoint is null or blank
+    if [[ -n "$public_endpoint" && "$public_endpoint" != "null" ]]; then
+        if [[ "$public_endpoint" =~ : && ! "$public_endpoint" =~ \. ]]; then
+            endpoint="[$public_endpoint]"
+        else
+            endpoint="$public_endpoint"
+        fi
+    else
+        host_interface=$(yq e '.local_peer.host_interface' config.yaml)
+        if [[ -z "$host_interface" || "$host_interface" == "null" ]]; then
+            echo "Error: host_interface not specified in config.yaml, cannot determine default IPv6 address."
+            return 1
+        fi
+        server_ipv6=$(ip -6 addr show "$host_interface" scope global | grep -oP 'inet6 \K[0-9a-f:]+' | grep -v '^fe80:' | head -n 1)
+        if [[ -n "$server_ipv6" ]]; then
+            endpoint="[$server_ipv6]"
+            echo "Using server IPv6 address: $endpoint"
+        else
+            echo "No global IPv6 address found on $host_interface, falling back to public IP detection..."
+            endpoint=$(wget -qO- https://api6.ipify.org || curl -s https://api6.ipify.org)
+            if [[ -n "$endpoint" ]]; then
+                endpoint="[$endpoint]"
+                echo "Using detected IPv6 public IP: $endpoint"
+            else
+                endpoint=$(wget -qO- https://api4.ipify.org || curl -s https://api4.ipify.org)
+                if [[ -n "$endpoint" ]]; then
+                    echo "No IPv6 available, using detected IPv4 public IP: $endpoint"
+                else
+                    echo "Error: Could not determine server IP (no IPv6 on $host_interface, no public IPv6 or IPv4 detected)."
+                    return 1
+                fi
+            fi
+        fi
+    fi
+
     # Check if server config exists and extract existing private key
     server_conf="/etc/wireguard/${interface_name}.conf"
     if [[ -f "$server_conf" ]]; then
@@ -217,7 +252,6 @@ EOF
                 client_private_key=$(wg genkey)
             fi
             client_public_key=$(echo "$client_private_key" | wg pubkey)
-            # Extract PSK from server config if it exists
             psk=$(awk -v pubkey="$client_public_key" '
                 $1 == "PublicKey" && $3 == pubkey {found=1}
                 found && $1 == "PresharedKey" {print $3; exit}
@@ -227,7 +261,6 @@ EOF
                 psk=$(wg genpsk)
             fi
         else
-            # New client, generate keys
             client_private_key=$(wg genkey)
             client_public_key=$(echo "$client_private_key" | wg pubkey)
             psk=$(wg genpsk)
@@ -281,7 +314,7 @@ MTU = $client_mtu
 PublicKey = $server_public_key
 PresharedKey = $psk
 AllowedIPs = $client_allowed_ips
-Endpoint = $public_endpoint:$port
+Endpoint = $endpoint:$port
 $( [[ "$client_persistent_keepalive" != "null" && -n "$client_persistent_keepalive" ]] && echo "PersistentKeepalive = $client_persistent_keepalive" )
 EOF
         chmod 600 "$client_conf"
