@@ -167,6 +167,19 @@ generate_full_configs() {
     server_inet6_mask=$(echo "$server_inet6" | cut -d '/' -f 2)
     base_inet6=$(echo "$server_inet6_ip" | sed 's/:[0-9a-f]*$//')
 
+    # Detect if the gateway has changed
+    old_server_inet=$(yq e '.local_peer.inet.gateway' "$(dirname "$0")/config.yaml.backup" 2>/dev/null || echo "")
+    old_server_inet6=$(yq e '.local_peer.inet6.gateway' "$(dirname "$0")/config.yaml.backup" 2>/dev/null || echo "")
+    gateway_changed=false
+    if [[ "$inet_enabled" == "true" && "$server_inet" != "$old_server_inet" ]]; then
+        echo "inet gateway changed from '$old_server_inet' to '$server_inet'. Recalculating client IPs."
+        gateway_changed=true
+    fi
+    if [[ "$inet6_enabled" == "true" && "$server_inet6" != "$old_server_inet6" ]]; then
+        echo "inet6 gateway changed from '$old_server_inet6' to '$server_inet6'. Recalculating client IPs."
+        gateway_changed=true
+    fi
+
     original_umask=$(umask)
     umask 077
 
@@ -197,9 +210,9 @@ EOF
         client_allowed_ips=$(yq e ".remote_peer[$i].allowed_ips" config.yaml)
         client_persistent_keepalive=$(yq e ".remote_peer[$i].persistent_keepalive" config.yaml)
 
-        # Preserve existing inet_address if it exists
+        # Recalculate inet_address if the gateway has changed or if it doesn't exist
         client_inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
-        if [[ "$inet_enabled" == "true" && ( "$client_inet" == "null" || -z "$client_inet" ) ]]; then
+        if [[ "$inet_enabled" == "true" && ( "$client_inet" == "null" || -z "$client_inet" || "$gateway_changed" == "true" ) ]]; then
             client_inet=$(find_next_inet "$base_inet" "$server_inet_mask" "${used_inets[@]}")
             if [[ $? -ne 0 ]]; then
                 echo "$client_inet"
@@ -211,9 +224,9 @@ EOF
             used_inets+=("$(echo "$client_inet" | cut -d '/' -f 1)")
         fi
 
-        # Preserve existing inet6_address if it exists
+        # Recalculate inet6_address if the gateway has changed or if it doesn't exist
         client_inet6=$(yq e ".remote_peer[$i].inet6_address" config.yaml)
-        if [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 && ( "$client_inet6" == "null" || -z "$client_inet6" ) ]]; then
+        if [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 && ( "$client_inet6" == "null" || -z "$client_inet6" || "$gateway_changed" == "true" ) ]]; then
             client_inet6=$(find_next_inet6 "$base_inet6" "$server_inet6_mask" "${used_inet6s[@]}")
             if [[ $? -ne 0 ]]; then
                 echo "$client_inet6"
@@ -282,6 +295,19 @@ generate_client_configs() {
     base_inet6=$(echo "$server_inet6_ip" | sed 's/:[0-9a-f]*$//')
     server_public_key=$(wg show "$interface_name" public-key)
 
+    # Detect if the gateway has changed
+    old_server_inet=$(yq e '.local_peer.inet.gateway' "$(dirname "$0")/config.yaml.backup" 2>/dev/null || echo "")
+    old_server_inet6=$(yq e '.local_peer.inet6.gateway' "$(dirname "$0")/config.yaml.backup" 2>/dev/null || echo "")
+    gateway_changed=false
+    if [[ "$inet_enabled" == "true" && "$server_inet" != "$old_server_inet" ]]; then
+        echo "inet gateway changed from '$old_server_inet' to '$server_inet'. Recalculating client IPs."
+        gateway_changed=true
+    fi
+    if [[ "$inet6_enabled" == "true" && "$server_inet6" != "$old_server_inet6" ]]; then
+        echo "inet6 gateway changed from '$old_server_inet6' to '$server_inet6'. Recalculating client IPs."
+        gateway_changed=true
+    fi
+
     public_endpoint=$(yq e '.local_peer.public_endpoint' config.yaml)
     if [[ -n "$public_endpoint" && "$public_endpoint" != "null" ]]; then
         if [[ "$public_endpoint" =~ : && ! "$public_endpoint" =~ \. ]]; then
@@ -325,9 +351,9 @@ generate_client_configs() {
         client_allowed_ips=$(yq e ".remote_peer[$i].allowed_ips" config.yaml)
         client_persistent_keepalive=$(yq e ".remote_peer[$i].persistent_keepalive" config.yaml)
 
-        # Preserve existing inet_address if it exists
+        # Recalculate inet_address if the gateway has changed or if it doesn't exist
         client_inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
-        if [[ "$inet_enabled" == "true" && ( "$client_inet" == "null" || -z "$client_inet" ) ]]; then
+        if [[ "$inet_enabled" == "true" && ( "$client_inet" == "null" || -z "$client_inet" || "$gateway_changed" == "true" ) ]]; then
             client_inet=$(find_next_inet "$base_inet" "$server_inet_mask" "${used_inets[@]}")
             if [[ $? -ne 0 ]]; then
                 echo "$client_inet"
@@ -336,9 +362,9 @@ generate_client_configs() {
             used_inets+=("$(echo "$client_inet" | cut -d '/' -f 1)")
         fi
 
-        # Preserve existing inet6_address if it exists
+        # Recalculate inet6_address if the gateway has changed or if it doesn't exist
         client_inet6=$(yq e ".remote_peer[$i].inet6_address" config.yaml)
-        if [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 && ( "$client_inet6" == "null" || -z "$client_inet6" ) ]]; then
+        if [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 && ( "$client_inet6" == "null" || -z "$client_inet6" || "$gateway_changed" == "true" ) ]]; then
             client_inet6=$(find_next_inet6 "$base_inet6" "$server_inet6_mask" "${used_inet6s[@]}")
             if [[ $? -ne 0 ]]; then
                 echo "$client_inet6"
