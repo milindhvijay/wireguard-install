@@ -169,7 +169,7 @@ get_existing_client_key() {
     local client_name="$1"
     local conf_file="$(dirname "$0")/wireguard-configs/${client_name}-${interface_name}.conf"
     if [[ -f "$conf_file" ]]; then
-        grep "PrivateKey" "$conf_file" | cut -d '=' -f 2 | tr -d '[:space:]'
+        grep "^PrivateKey" "$conf_file" | cut -d '=' -f 2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
     fi
 }
 
