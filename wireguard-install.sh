@@ -151,7 +151,6 @@ generate_full_configs() {
         return 1
     fi
 
-    # [Existing variable declarations remain unchanged]
     port=$(yq e '.local_peer.port' config.yaml)
     mtu=$(yq e '.local_peer.mtu' config.yaml)
     [[ "$mtu" == "null" || -z "$mtu" ]] && mtu=1420
@@ -213,7 +212,7 @@ EOF
     local -a used_inet6s=("$server_inet6_ip")
     declare -A peer_configs  # To store updated peer entries
 
-    for i in $(seq 0 $(($number_of_clients - 1))); do
+    for i in $(seq 0 $((number_of_clients - 1))); do
         client_name=$(yq e ".remote_peer[$i].name" config.yaml)
         client_dns=$(yq e ".remote_peer[$i].dns" config.yaml)
         client_mtu=$(yq e ".remote_peer[$i].mtu" config.yaml)
@@ -265,8 +264,9 @@ EOF
         client_inet_ip=$(echo "$client_inet" | cut -d '/' -f 1)
         client_inet6_ip=$(echo "$client_inet6" | cut -d '/' -f 1)
 
-        # Store peer config in associative array instead of appending directly
+        # Store peer config with client name as a comment
         peer_configs["$client_public_key"]=$(cat << EOF
+# $client_name
 [Peer]
 PublicKey = $client_public_key
 PresharedKey = $psk
@@ -414,8 +414,9 @@ generate_client_configs() {
         client_inet6_ip=$(echo "$client_inet6" | cut -d '/' -f 1)
         client_allowed_ips_combined="${client_inet_ip}/32$( [[ "$inet6_enabled" == "true" && $(ip -6 addr | grep -c 'inet6 [23]') -gt 0 ]] && echo ", ${client_inet6_ip}/128" )"
 
-        # Store updated peer config
+        # Store updated peer config with client name as a comment
         peer_configs["$client_public_key"]=$(cat << EOF
+# $client_name
 [Peer]
 PublicKey = $client_public_key
 PresharedKey = $psk
