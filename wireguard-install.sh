@@ -315,7 +315,6 @@ generate_client_configs() {
         return 1
     fi
 
-    # [Existing variable declarations remain unchanged]
     port=$(yq e '.local_peer.port' config.yaml)
     [[ "$interface_name" == "null" || -z "$interface_name" ]] && interface_name="wg0"
     inet_enabled=$(yq e '.local_peer.inet.enabled' config.yaml)
@@ -353,7 +352,7 @@ generate_client_configs() {
         local inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
         local inet6=$(yq e ".remote_peer[$i].inet6_address" config.yaml)
         [[ "$inet" != "null" && -n "$inet" ]] && used_inets+=("$(echo "$inet" | cut -d '/' -f 1)")
-        [[ "$inet6" != "null" && -n "$inet6" ]] && used_inet6s+=("$(echo "$inet6" | cut -d '/' -f 1)")
+        [[ "$inet6" != h "null" && -n "$inet6" ]] && used_inet6s+=("$(echo "$inet6" | cut -d '/' -f 1)")
     done
 
     declare -A peer_configs  # To store updated peer entries
@@ -452,8 +451,16 @@ EOF
 
     # Update server config: keep unchanged peers, update changed ones
     temp_file=$(mktemp)
-    awk '
-    BEGIN { in_section = 0; buffer = ""; need_blank = 0 }
+    # Pass the public keys as a single string and split them in awk
+    updated_peers_str=$(printf '%s\n' "${!peer_configs[@]}" | tr '\n' ' ')
+    awk -v updated="$updated_peers_str" '
+    BEGIN {
+        split(updated, updated_peers, " ");
+        for (i in updated_peers) {
+            if (updated_peers[i] != "") updated_array[updated_peers[i]] = 1;
+        }
+        in_section = 0; buffer = ""; need_blank = 0;
+    }
     /^\[(Interface|Peer)\]$/ {
         if (in_section && keep) {
             if (need_blank) { print "" }
@@ -464,7 +471,7 @@ EOF
     }
     in_section && /PublicKey =/ {
         pubkey = $3
-        if (pubkey in updated_peers) { keep = 0 } else { keep = ($1 == "[Interface]" ? 1 : 0) }
+        if (pubkey in updated_array) { keep = 0 } else { keep = ($1 == "[Interface]" ? 1 : 0) }
         buffer = buffer $0 "\n"; next
     }
     in_section && /^$/ {
@@ -477,7 +484,7 @@ EOF
     }
     in_section { buffer = buffer $0 "\n"; next }
     END { if (in_section && keep) { if (need_blank) { print "" } print buffer } }
-    ' updated_peers="$(printf '%s\n' "${!peer_configs[@]}")" "$server_conf" > "$temp_file"
+    ' "$server_conf" > "$temp_file"
     echo "" >> "$temp_file"
     for pubkey in "${!peer_configs[@]}"; do
         echo "${peer_configs[$pubkey]}" >> "$temp_file"
