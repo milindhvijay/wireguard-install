@@ -352,7 +352,7 @@ generate_client_configs() {
         local inet=$(yq e ".remote_peer[$i].inet_address" config.yaml)
         local inet6=$(yq e ".remote_peer[$i].inet6_address" config.yaml)
         [[ "$inet" != "null" && -n "$inet" ]] && used_inets+=("$(echo "$inet" | cut -d '/' -f 1)")
-        [[ "$inet6" != h "null" && -n "$inet6" ]] && used_inet6s+=("$(echo "$inet6" | cut -d '/' -f 1)")
+        [[ "$inet6" != "null" && -n "$inet6" ]] && used_inet6s+=("$(echo "$inet6" | cut -d '/' -f 1)")
     done
 
     declare -A peer_configs  # To store updated peer entries
@@ -451,7 +451,6 @@ EOF
 
     # Update server config: keep unchanged peers, update changed ones
     temp_file=$(mktemp)
-    # Pass the public keys as a single string and split them in awk
     updated_peers_str=$(printf '%s\n' "${!peer_configs[@]}" | tr '\n' ' ')
     awk -v updated="$updated_peers_str" '
     BEGIN {
